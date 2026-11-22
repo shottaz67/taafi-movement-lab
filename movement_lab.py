@@ -9,7 +9,7 @@ No AI service and no internet needed once installed.
 Usage:
   python movement_lab.py video.mp4 --movement squat --view side --patient "Name"
   python movement_lab.py video2.mp4 --movement squat --view side --compare output/squat_results.json
-  movements: squat | shoulder_raise | knee_bend | elbow_flexion | hip_flexion | sit_to_stand | lunge | single_leg_balance      view: side | front
+  movements: squat | shoulder_raise | knee_bend | elbow_flexion | hip_flexion | sit_to_stand | lunge | single_leg_balance | shoulder_flexion | hip_abduction | straight_leg_raise | gait | tug | posture | neck | wrist      view: side | front
 """
 import argparse
 import datetime
@@ -34,7 +34,15 @@ BONES = [(11, 12), (11, 13), (13, 15), (12, 14), (14, 16), (11, 23), (12, 24),
 
 MOVES = {
     "squat": ("Squat", "القرفصاء (سكوات)"),
-    "shoulder_raise": ("Shoulder raise (arm elevation)", "رفع الذراع (الكتف)"),
+    "shoulder_raise": ("Shoulder abduction (arm raised to the side)", "تبعيد الكتف (رفع الذراع جانباً)"),
+    "shoulder_flexion": ("Shoulder flexion (arm raised forward)", "ثني الكتف (رفع الذراع للأمام)"),
+    "hip_abduction": ("Hip abduction (leg out to the side)", "تبعيد الورك (رفع الساق جانباً)"),
+    "straight_leg_raise": ("Straight leg raise", "رفع الساق المستقيمة"),
+    "gait": ("Gait (walking)", "المشي"),
+    "tug": ("Timed Up and Go", "اختبار الوقوف والمشي الموقّت"),
+    "posture": ("Posture screen (standing still)", "فحص وضعية الجسم (وقوفاً)"),
+    "neck": ("Neck range of motion", "مدى حركة الرقبة"),
+    "wrist": ("Wrist bend", "ثني الرسغ"),
     "knee_bend": ("Knee flexion / extension", "ثني ومد الركبة"),
     "elbow_flexion": ("Elbow flexion / extension (arm curl)", "ثني ومد المرفق (الذراع)"),
     "hip_flexion": ("Hip flexion (standing knee raise)", "ثني الورك (رفع الركبة وقوفاً)"),
@@ -150,19 +158,37 @@ def medial_knee_dev(P, idx, side):
 
 def visible_side(lm):
     def m(ids):
-        return float(np.nanmean(lm[:, ids, 2]))
+        v = float(np.nanmean(lm[:, ids, 2]))
+        return -1.0 if np.isnan(v) else v
     return "L" if m([L_HIP, L_KN, L_AN]) >= m([R_HIP, R_KN, R_AN]) else "R"
 
 
 def visible_arm_side(lm):
     def m(ids):
-        return float(np.nanmean(lm[:, ids, 2]))
+        v = float(np.nanmean(lm[:, ids, 2]))
+        return -1.0 if np.isnan(v) else v
     return "L" if m([L_SH, L_EL, L_WR]) >= m([R_SH, R_EL, R_WR]) else "R"
 
 
 def needed(movement, side):
-    if movement in ("lunge", "single_leg_balance"):
+    if movement in ("lunge", "single_leg_balance", "gait"):
         return [L_HIP, R_HIP, L_KN, R_KN, L_AN, R_AN]
+    if movement == "tug":
+        return [L_HIP, R_HIP]
+    if movement == "shoulder_flexion":
+        if side:
+            return list((L_SH, L_EL, L_HIP) if side == "L" else (R_SH, R_EL, R_HIP))
+        return [L_SH, R_SH, L_EL, R_EL, L_HIP, R_HIP]
+    if movement == "posture":
+        if side:
+            return [7 if side == "L" else 8] + list((L_SH, L_HIP) if side == "L" else (R_SH, R_HIP))
+        return [7, 8, L_SH, R_SH, L_HIP, R_HIP]
+    if movement == "neck":
+        if side:
+            return [0, 7 if side == "L" else 8, L_SH if side == "L" else R_SH]
+        return [0, 7, 8, L_SH, R_SH]
+    if movement == "wrist":
+        return list((L_EL, L_WR, 19) if side == "L" else (R_EL, R_WR, 20)) if side else [L_EL, R_EL, L_WR, R_WR, 19, 20]
     if movement == "elbow_flexion":
         if side:
             return list((L_SH, L_EL, L_WR, L_HIP) if side == "L" else (R_SH, R_EL, R_WR, R_HIP))
@@ -613,6 +639,314 @@ def compute(P, fps, movement, view, side=None):
         if view == "side":
             notes.append(("Single-leg balance is best filmed from the front so pelvis drop and sway can be seen.",
                           "يفضل تصوير التوازن على ساق واحدة من الأمام لرؤية هبوط الحوض والتمايل."))
+    elif movement == "shoulder_flexion":
+        sides_ = [side] if side else ["L", "R"]
+        f = S["sh_" + side] if side else (S["sh_L"] + S["sh_R"]) / 2
+        pk, _ = find_peaks(f, prominence=40, distance=max(1, int(fps * 0.8)))
+        if len(pk) == 0:
+            pk = np.array([int(np.argmax(f))])
+            notes.append(("No clear repetitions were detected; the highest point of the video was used.",
+                          "لم يتم رصد تكرارات واضحة؛ تم اعتماد أعلى نقطة في الفيديو."))
+        wins = rep_windows(f, pk)
+        reps = len(pk)
+        key_idx = int(pk[np.argmax(f[pk])])
+        ref_en, ref_ar = "Full forward flexion ~150-180 deg", "الثني الأمامي الكامل ~150-180 درجة"
+        if side:
+            m = float(np.mean(S["sh_" + side][pk]))
+            r1 = side_row("sh_flex", "Maximum arm elevation (forward)", "أقصى ارتفاع للذراع (للأمام)", m, side, 140, 110, ref_en, ref_ar)
+            chip("Arm raise", "رفع الذراع", f"{m:.0f}°", r1["status"])
+        else:
+            r1 = pair_row("sh_flex", "Maximum arm elevation (forward)", "أقصى ارتفاع للذراع (للأمام)",
+                          float(np.mean(S["sh_L"][pk])), float(np.mean(S["sh_R"][pk])), "deg", ref_en, ref_ar)
+            chip("Arm raise L/R", "رفع الذراع", f"{r1['asym']}%", r1["status"])
+            notes.append(("Forward arm raises are best filmed from the side.", "يفضل تصوير رفع الذراع للأمام من الجانب."))
+        trunk_sig = S[f"trunk_{side}"] if side else S["trunk"]
+        tr = float(np.max(trunk_sig[pk]))
+        r2 = single_row("trunk", "Trunk lean (leaning back to lift)", "ميلان الجذع (الميل للخلف للرفع)", tr, "deg", 10, 20,
+                        "Body should stay upright", "يجب أن يبقى الجسم منتصباً")
+        chip("Trunk lean", "ميلان الجذع", f"{tr:.0f}°", r2["status"])
+        dn = float(np.mean([(i - a) / fps for a, i, b in wins]))
+        up = float(np.mean([(b - i) / fps for a, i, b in wins]))
+        info_row("tempo", "Raise / lower time (average)", "زمن الرفع / الإنزال (المتوسط)", f"{dn:.1f} s / {up:.1f} s")
+        plot = dict(title="Arm elevation over time", ylabel="elevation (deg)", hud="Arm",
+                    lines=[((("Left" if sd == "L" else "Right")), S["sh_" + sd], "#3F6200" if side else ("#2f80ed" if sd == "L" else "#f2994a"))
+                           for sd in sides_])
+
+    elif movement == "hip_abduction":
+        def abd(h, a):
+            dd = P[:, a] - P[:, h]
+            return np.degrees(np.arctan2(np.abs(dd[:, 0]), np.abs(dd[:, 1]) + 1e-9))
+        aL, aR = abd(L_HIP, L_AN), abd(R_HIP, R_AN)
+        f = np.maximum(aL, aR)
+        pk, _ = find_peaks(f, prominence=12, distance=max(1, int(fps * 0.8)))
+        if len(pk) == 0:
+            pk = np.array([int(np.argmax(f))])
+            notes.append(("No clear repetitions were detected; the widest point of the video was used.",
+                          "لم يتم رصد تكرارات واضحة؛ تم اعتماد أوسع نقطة في الفيديو."))
+        wins = rep_windows(f, pk, thr=6)
+        reps = len(pk)
+        key_idx = int(pk[np.argmax(f[pk])])
+        mL, mR = float(np.percentile(aL, 98)), float(np.percentile(aR, 98))
+        ref_en, ref_ar = "Normal ~30-45 deg", "الطبيعي ~30-45 درجة"
+        if min(mL, mR) < 12:
+            sd = "L" if mL >= mR else "R"
+            r1 = side_row("hip_abd", "Maximum hip abduction", "أقصى تبعيد للورك", max(mL, mR), sd, 30, 20, ref_en, ref_ar)
+            chip("Hip abduction", "تبعيد الورك", f"{max(mL, mR):.0f}°", r1["status"])
+            notes.append(("Only one leg was lifted, so no left/right comparison was made. Repeat with the other leg.",
+                          "تم رفع ساق واحدة فقط، لذلك لم تُجرَ مقارنة بين الجانبين. كرر الاختبار بالساق الأخرى."))
+        else:
+            r1 = pair_row("hip_abd", "Maximum hip abduction", "أقصى تبعيد للورك", mL, mR, "deg", ref_en, ref_ar)
+            chip("Left/right abduction", "تماثل التبعيد", f"{r1['asym']}%", r1["status"])
+        tr = float(np.max(S["trunk"][pk]))
+        r2 = single_row("trunk", "Sideways trunk lean while lifting the leg", "ميلان الجذع جانبياً أثناء رفع الساق", tr, "deg", 8, 12,
+                        "Leaning the body sideways can fake extra range", "الميل الجانبي للجسم قد يعطي مدى زائفاً")
+        chip("Trunk lean", "ميلان الجذع", f"{tr:.0f}°", r2["status"])
+        dn = float(np.mean([(i - a) / fps for a, i, b in wins]))
+        up = float(np.mean([(b - i) / fps for a, i, b in wins]))
+        info_row("tempo", "Raise / lower time (average)", "زمن الرفع / الإنزال (المتوسط)", f"{dn:.1f} s / {up:.1f} s")
+        plot = dict(title="Leg angle from vertical over time", ylabel="abduction (deg)", hud="Abduction",
+                    lines=[("Left leg", aL, "#2f80ed"), ("Right leg", aR, "#f2994a")])
+        if view == "side":
+            notes.append(("Hip abduction must be filmed from the front.", "يجب تصوير تبعيد الورك من الأمام."))
+
+    elif movement == "straight_leg_raise":
+        hfL, hfR = 180 - ang(P[:, L_SH], P[:, L_HIP], P[:, L_AN]), 180 - ang(P[:, R_SH], P[:, R_HIP], P[:, R_AN])
+        sd = side or ("L" if np.nanmax(hfL) >= np.nanmax(hfR) else "R")
+        f = hfL if sd == "L" else hfR
+        pk, _ = find_peaks(f, prominence=20, distance=max(1, int(fps * 0.8)))
+        if len(pk) == 0:
+            pk = np.array([int(np.argmax(f))])
+            notes.append(("No clear repetitions were detected; the highest point of the video was used.",
+                          "لم يتم رصد تكرارات واضحة؛ تم اعتماد أعلى نقطة في الفيديو."))
+        wins = rep_windows(f, pk, thr=8)
+        reps = len(pk)
+        key_idx = int(pk[np.argmax(f[pk])])
+        m = float(np.mean(f[pk]))
+        r1 = side_row("slr", "Maximum leg raise (hip flexion)", "أقصى رفع للساق (ثني الورك)", m, sd, 70, 50,
+                      "Typical straight-leg-raise range ~70-90 deg", "المدى الطبيعي لرفع الساق المستقيمة ~70-90 درجة")
+        chip("Leg raise", "رفع الساق", f"{m:.0f}°", r1["status"])
+        kl = float(np.mean((180 - S["knee_" + sd])[pk]))
+        r2 = single_row("knee_lag", "Knee bend while the leg is raised (should stay straight)", "ثني الركبة أثناء رفع الساق (يجب أن تبقى مستقيمة)",
+                        kl, "deg", 10, 20, "Knee should stay straight (about 0-10 deg of bend)", "يجب أن تبقى الركبة مستقيمة (~0-10 درجات)")
+        chip("Knee straight", "استقامة الركبة", f"{kl:.0f}° bend", r2["status"])
+        dn = float(np.mean([(i - a) / fps for a, i, b in wins]))
+        up = float(np.mean([(b - i) / fps for a, i, b in wins]))
+        info_row("tempo", "Raise / lower time (average)", "زمن الرفع / الإنزال (المتوسط)", f"{dn:.1f} s / {up:.1f} s")
+        plot = dict(title="Leg raise over time", ylabel="hip flexion (deg)", hud="Leg raise",
+                    lines=[(("Left" if sd == "L" else "Right") + " leg", f, "#3F6200")])
+        if view == "front":
+            notes.append(("Straight leg raise must be filmed from the side.", "يجب تصوير رفع الساق المستقيمة من الجانب."))
+
+    elif movement == "gait":
+        sig = P[:, L_AN, 0] - P[:, R_AN, 0]
+        rngv = float(np.nanmax(sig) - np.nanmin(sig)) + 1e-9
+        dist_ = max(1, int(fps * 0.25))
+        pp, _ = find_peaks(sig, prominence=0.15 * rngv, distance=dist_)
+        pn, _ = find_peaks(-sig, prominence=0.15 * rngv, distance=dist_)
+        ev = sorted([(int(i), "L") for i in pp] + [(int(i), "R") for i in pn])
+        f = sig
+        if len(ev) < 4:
+            notes.append(("Fewer than 4 steps were detected. Film from the side while the person walks across the frame, 5+ steps.",
+                          "تم رصد أقل من ٤ خطوات. صوّر من الجانب والشخص يعبر الإطار، ٥ خطوات أو أكثر."))
+            ev = ev or [(int(np.argmax(np.abs(sig))), "L")]
+        steps = len(ev)
+        reps = steps
+        key_idx = ev[len(ev) // 2][0]
+        wins = [(max(0, e - int(fps * 0.3)), e, min(len(f) - 1, e + int(fps * 0.3))) for e, _ in ev[:12]]
+        if steps >= 4:
+            tt = (ev[-1][0] - ev[0][0]) / fps
+            cad = (steps - 1) / max(tt, 0.1) * 60
+            st_c = "ok" if 90 <= cad <= 135 else ("watch" if 75 <= cad <= 150 else "flag")
+            add("cadence", "Cadence", "إيقاع المشي (عدد الخطوات)", st_c, value=round(cad, 0), unit="steps/min",
+                ref_en="Comfortable adult walking ~100-120 steps/min", ref_ar="المشي المريح للبالغين ~100-120 خطوة بالدقيقة")
+            chip("Cadence", "الإيقاع", f"{cad:.0f}/min", st_c)
+            gaps = {"L": [], "R": []}
+            for (e0, s0), (e1, _) in zip(ev[:-1], ev[1:]):
+                gaps[s0].append((e1 - e0) / fps)
+            if gaps["L"] and gaps["R"]:
+                a_ = asym(np.mean(gaps["L"]), np.mean(gaps["R"]))
+                st_a = asym_status(a_)
+                add("step_sym", "Left/right step-time difference", "فرق زمن الخطوة بين الجانبين", st_a, value=round(a_, 1), unit="%",
+                    ref_en="Under ~10% suggests an even rhythm", ref_ar="أقل من ~10% يدل على إيقاع متساوٍ")
+                chip("Step symmetry", "تماثل الخطوات", f"{a_:.0f}%", st_a)
+        info_row("steps", "Steps counted", "عدد الخطوات", f"{steps}")
+        kL, kR = np.nanpercentile(180 - S["knee_L"], 98), np.nanpercentile(180 - S["knee_R"], 98)
+        if not (np.isnan(kL) or np.isnan(kR)):
+            if view == "side":
+                info_row("gait_knee", "Peak knee bend during swing", "أقصى ثني للركبة أثناء المرجحة", f"left {kL:.0f}  right {kR:.0f} deg",
+                         "Typical ~60-70 deg; the far leg is less reliable in side view")
+            else:
+                info_row("gait_knee", "Peak knee bend during swing", "أقصى ثني للركبة أثناء المرجحة", f"left {kL:.0f}  right {kR:.0f} deg")
+        tr = float(np.nanmean(S["trunk"]))
+        info_row("trunk", "Average trunk lean", "متوسط ميلان الجذع", f"{tr:.0f} deg")
+        trunk_sig = S["trunk"]
+        plot = dict(title="Left-right ankle separation over time (peaks = steps)", ylabel="separation (px)", hud="Ankle gap",
+                    lines=[("Ankle separation", sig, "#3F6200")])
+        if view == "front":
+            notes.append(("Gait is analysed best from the side.", "يُحلَّل المشي بشكل أفضل من الجانب."))
+
+    elif movement == "tug":
+        hy = np.nanmean(np.stack([P[:, L_HIP, 1], P[:, R_HIP, 1]]), axis=0)
+        hx = np.nanmean(np.stack([P[:, L_HIP, 0], P[:, R_HIP, 0]]), axis=0)
+        sh_y = np.nanmean(np.stack([P[:, L_SH, 1], P[:, R_SH, 1]]), axis=0)
+        torso = float(np.nanmedian(np.abs(sh_y - hy))) + 1e-9
+        y0 = float(np.nanmedian(hy[:max(5, int(fps))]))
+        gain = y0 - hy
+        f = gain
+        up_idx = np.where(gain > 0.08 * torso)[0]
+        if len(up_idx) < int(fps):
+            notes.append(("No stand-up was detected. Start seated, stand, walk about 3 m, turn, return and sit down.",
+                          "لم يتم رصد وقوف. ابدأ جالساً ثم قف وامشِ نحو ٣ أمتار ثم استدر وعد واجلس."))
+            up_idx = np.array([0, len(hy) - 1])
+        a, b = int(up_idx[0]), int(up_idx[-1])
+        total = (b - a) / fps
+        st_t = "ok" if total < 10 else ("watch" if total < 14 else "flag")
+        add("tug_time", "Total test time (rise to sit)", "زمن الاختبار الكلي (من الوقوف حتى الجلوس)", st_t, value=round(total, 1), unit="s",
+            ref_en="Under ~10 s: normal mobility; 14 s or more is linked to higher fall risk in older adults",
+            ref_ar="أقل من ~10 ثوانٍ: حركة طبيعية؛ ١٤ ثانية فأكثر ترتبط بخطر سقوط أعلى لدى كبار السن")
+        chip("Test time", "زمن الاختبار", f"{total:.1f} s", st_t)
+        top = float(np.nanpercentile(gain[a:b + 1], 90))
+        rs = np.where(gain[a:b + 1] >= 0.9 * top)[0]
+        rise = (rs[0]) / fps if len(rs) else 0.0
+        info_row("tug_rise", "Time to stand up", "زمن النهوض", f"{rise:.1f} s")
+        span = float(np.nanmax(hx[a:b + 1]) - np.nanmin(hx[a:b + 1])) / torso
+        info_row("tug_walk", "Distance covered (in torso lengths)", "المسافة المقطوعة (بأطوال الجذع)", f"{span:.1f}")
+        key_idx = int((a + b) // 2)
+        wins = [(a, key_idx, b)]
+        reps = 1
+        trunk_sig = S["trunk"]
+        plot = dict(title="Hip height gained over time (stand, walk, sit)", ylabel="height (px)", hud="Hip rise",
+                    lines=[("Hip height", gain, "#3F6200")])
+
+    elif movement == "posture":
+        n_ = len(P)
+        key_idx = n_ // 2
+        wins = [(0, key_idx, n_ - 1)]
+        reps = 1
+        if side:
+            ear = 7 if side == "L" else 8
+            sh_, hp_ = (L_SH, L_HIP) if side == "L" else (R_SH, R_HIP)
+            direction = np.sign(np.nanmedian(P[:, 0, 0] - P[:, ear, 0])) or 1.0
+            torso = float(np.nanmedian(np.abs(P[:, sh_, 1] - P[:, hp_, 1]))) + 1e-9
+            head = (P[:, ear, 0] - P[:, sh_, 0]) * direction / torso * 100
+            shf = (P[:, sh_, 0] - P[:, hp_, 0]) * direction / torso * 100
+            lean = S[f"trunk_{side}"]
+            hv = float(np.nanmedian(head))
+            single_row("head_fwd", "Head forward of the shoulder", "تقدّم الرأس أمام الكتف", max(hv, 0.0), "% torso", 15, 25,
+                       "Ear should sit roughly over the shoulder", "يجب أن تكون الأذن فوق الكتف تقريباً")
+            chip("Head forward", "تقدّم الرأس", f"{max(hv, 0):.0f}%", rows[-1]["status"])
+            sv = float(np.nanmedian(shf))
+            single_row("sh_fwd", "Shoulder forward of the hip", "تقدّم الكتف أمام الحوض", abs(sv), "% torso", 10, 20,
+                       "Shoulder should stack over the hip", "يجب أن يكون الكتف فوق الحوض")
+            lv = float(np.nanmedian(lean))
+            single_row("trunk", "Trunk lean from vertical", "ميلان الجذع عن العمودي", lv, "deg", 5, 10,
+                       "Should stay near vertical", "يجب أن يبقى قريباً من العمودي")
+            chip("Trunk lean", "ميلان الجذع", f"{lv:.0f}°", rows[-1]["status"])
+            f = head
+            plot = dict(title="Head position over time (% of torso length)", ylabel="head forward (%)", hud="Head fwd",
+                        lines=[("Head forward", head, "#3F6200")])
+        else:
+            def tilt(a_, b_):
+                dd = P[:, b_] - P[:, a_]
+                return np.degrees(np.arctan2(dd[:, 1], np.abs(dd[:, 0]) + 1e-9))
+            shw = float(np.nanmedian(np.abs(P[:, L_SH, 0] - P[:, R_SH, 0]))) + 1e-9
+            sh_t, hp_t, hd_t = tilt(L_SH, R_SH), tilt(L_HIP, R_HIP), tilt(7, 8)
+            shift = ((P[:, L_SH, 0] + P[:, R_SH, 0]) / 2 - (P[:, L_HIP, 0] + P[:, R_HIP, 0]) / 2) / shw * 100
+            v1 = abs(float(np.nanmedian(sh_t)))
+            single_row("sh_tilt", "Shoulder level (tilt)", "مستوى الكتفين (الميلان)", v1, "deg", 3, 5,
+                       "Shoulders should be level", "يجب أن يكون الكتفان بمستوى واحد")
+            chip("Shoulder tilt", "ميلان الكتفين", f"{v1:.1f}°", rows[-1]["status"])
+            v2 = abs(float(np.nanmedian(hp_t)))
+            single_row("hip_tilt", "Pelvis level (tilt)", "مستوى الحوض (الميلان)", v2, "deg", 3, 5,
+                       "Hips should be level", "يجب أن يكون الحوض مستوياً")
+            chip("Pelvis tilt", "ميلان الحوض", f"{v2:.1f}°", rows[-1]["status"])
+            v3 = abs(float(np.nanmedian(hd_t)))
+            single_row("head_tilt", "Head tilt", "ميلان الرأس", v3, "deg", 3, 5,
+                       "Head should sit level", "يجب أن يكون الرأس مستوياً")
+            v4 = abs(float(np.nanmedian(shift)))
+            single_row("shift", "Sideways shift of the trunk over the pelvis", "إزاحة الجذع جانبياً فوق الحوض", v4, "% shoulder width", 5, 10,
+                       "Shoulders should sit centred over the hips", "يجب أن يتمركز الكتفان فوق الحوض")
+            chip("Trunk shift", "إزاحة الجذع", f"{v4:.0f}%", rows[-1]["status"])
+            f = sh_t
+            plot = dict(title="Shoulder line tilt over time", ylabel="tilt (deg)", hud="Shoulder tilt",
+                        lines=[("Shoulders", sh_t, "#3F6200"), ("Pelvis", hp_t, "#f2994a")])
+        notes.append(("Stand relaxed and still for 3-5 seconds, whole body in view, fitted clothing. A photo also works.",
+                      "قف مسترخياً وثابتاً لمدة ٣-٥ ثوانٍ، الجسم كاملاً في الإطار وبملابس ضيقة. تصلح الصورة أيضاً."))
+
+    elif movement == "neck":
+        n_ = len(P)
+        def range_row(key, en, ar, v, good, watch, ref_en, ref_ar):
+            stt = "ok" if v >= good else ("watch" if v >= watch else "flag")
+            return add(key, en, ar, stt, value=round(float(v), 1), unit="deg", ref_en=ref_en, ref_ar=ref_ar)
+        if side:
+            ear = 7 if side == "L" else 8
+            dx = np.abs(P[:, 0, 0] - P[:, ear, 0]) + 1e-9
+            ang_ = np.degrees(np.arctan2(P[:, 0, 1] - P[:, ear, 1], dx))       # + = nose lower than ear (looking down)
+            ang_ = ang_ - np.median(ang_[:max(5, int(fps))])
+            flex, ext = float(np.percentile(ang_, 98)), float(-np.percentile(ang_, 2))
+            r1 = range_row("neck_flex", "Neck flexion (chin down)", "ثني الرقبة (الذقن للأسفل)", flex, 35, 20,
+                           "Approximate normal ~45-50 deg", "الطبيعي التقريبي ~45-50 درجة")
+            r2 = range_row("neck_ext", "Neck extension (looking up)", "مد الرقبة (النظر للأعلى)", ext, 40, 25,
+                           "Approximate normal ~55-70 deg", "الطبيعي التقريبي ~55-70 درجة")
+            chip("Flexion", "الثني", f"{flex:.0f}°", r1["status"])
+            chip("Extension", "المد", f"{ext:.0f}°", r2["status"])
+            f = ang_
+            plot = dict(title="Head tilt up/down over time", ylabel="angle (deg)", hud="Head tilt", lines=[("Head", ang_, "#3F6200")])
+            notes.append(("Side-view neck angles are approximate (head tilt from the ear-nose line).",
+                          "زوايا الرقبة من الجانب تقريبية (ميلان الرأس من خط الأذن-الأنف)."))
+        else:
+            tilt = np.degrees(np.arctan2(P[:, 8, 1] - P[:, 7, 1], np.abs(P[:, 8, 0] - P[:, 7, 0]) + 1e-9))
+            tilt = tilt - np.median(tilt[:max(5, int(fps))])
+            ew = np.abs(P[:, 8, 0] - P[:, 7, 0]) + 1e-9
+            rot = np.degrees(np.arcsin(np.clip((P[:, 0, 0] - (P[:, 7, 0] + P[:, 8, 0]) / 2) / (ew / 2 + 1e-9), -1, 1)))
+            rot = rot - np.median(rot[:max(5, int(fps))])
+            tl, tr_ = float(-np.percentile(tilt, 2)), float(np.percentile(tilt, 98))
+            rl, rr = float(-np.percentile(rot, 2)), float(np.percentile(rot, 98))
+            r1 = pair_row("neck_tilt", "Sideways neck tilt", "ميلان الرقبة جانبياً", tl, tr_, "deg",
+                          "Approximate normal ~40-45 deg each side", "الطبيعي التقريبي ~40-45 درجة لكل جانب")
+            r2 = pair_row("neck_rot", "Neck rotation", "دوران الرقبة", rl, rr, "deg",
+                          "Approximate normal ~70-80 deg each side (underestimated from a single camera)",
+                          "الطبيعي التقريبي ~70-80 درجة لكل جانب (مقدّر بأقل من الحقيقة بكاميرا واحدة)")
+            chip("Tilt L/R", "الميلان", f"{r1['asym']}%", r1["status"])
+            chip("Rotation L/R", "الدوران", f"{r2['asym']}%", r2["status"])
+            f = tilt
+            plot = dict(title="Sideways head tilt over time", ylabel="tilt (deg)", hud="Head tilt", lines=[("Tilt", tilt, "#3F6200"), ("Rotation", rot, "#f2994a")])
+            notes.append(("Left/right are as seen by the camera. Neck angles are rough estimates from face points.",
+                          "اليمين/اليسار كما تراه الكاميرا. زوايا الرقبة تقديرات تقريبية من نقاط الوجه."))
+        key_idx = int(np.argmax(np.abs(f)))
+        wins = [(0, key_idx, n_ - 1)]
+        reps = 1
+
+    elif movement == "wrist":
+        sides_ = [side] if side else ["L", "R"]
+        dev = {}
+        for sd in sides_:
+            el, wr, ix = (L_EL, L_WR, 19) if sd == "L" else (R_EL, R_WR, 20)
+            dev[sd] = 180 - ang(P[:, el], P[:, wr], P[:, ix])
+        f = dev[side] if side else np.maximum(dev["L"], dev["R"])
+        pk, _ = find_peaks(f, prominence=15, distance=max(1, int(fps * 0.6)))
+        if len(pk) == 0:
+            pk = np.array([int(np.argmax(f))])
+            notes.append(("No clear repetitions were detected; the largest bend in the video was used.",
+                          "لم يتم رصد تكرارات واضحة؛ تم اعتماد أكبر ثني في الفيديو."))
+        wins = rep_windows(f, pk, thr=6)
+        reps = len(pk)
+        key_idx = int(pk[np.argmax(f[pk])])
+        ref_en, ref_ar = "Normal ~70-80 deg flexion or ~60-70 deg extension", "الطبيعي ~70-80 درجة ثني أو ~60-70 درجة مد"
+        if side:
+            m = float(np.mean(dev[side][pk]))
+            r1 = side_row("wrist_bend", "Maximum wrist bend from neutral", "أقصى ثني للرسغ عن الوضع المحايد", m, side, 50, 30, ref_en, ref_ar)
+            chip("Wrist bend", "ثني الرسغ", f"{m:.0f}°", r1["status"])
+        else:
+            mL, mR = float(np.percentile(dev["L"], 98)), float(np.percentile(dev["R"], 98))
+            r1 = pair_row("wrist_bend", "Maximum wrist bend from neutral", "أقصى ثني للرسغ عن الوضع المحايد", mL, mR, "deg", ref_en, ref_ar)
+            chip("Left/right wrist", "تماثل الرسغ", f"{r1['asym']}%", r1["status"])
+        trunk_sig = S["trunk"]
+        plot = dict(title="Wrist bend from neutral over time", ylabel="bend (deg)", hud="Wrist",
+                    lines=[((("Left" if sd == "L" else "Right")), dev[sd], "#3F6200" if side else ("#2f80ed" if sd == "L" else "#f2994a")) for sd in sides_])
+        notes.append(("Wrist tracking is the least reliable: film close up, forearm still, hand fully in view. "
+                      "Flexion and extension cannot be told apart here, so film them as two separate movements.",
+                      "تتبع الرسغ هو الأقل موثوقية: صوّر عن قرب مع ثبات الساعد وظهور اليد كاملة. لا يمكن التمييز بين الثني والمد هنا، لذا صوّرهما كحركتين منفصلتين."))
     else:
         sys.exit("unknown movement")
 
@@ -724,6 +1058,52 @@ def clinician_checks(movement, side, R):
         if bad("sway") or bad("trunk"):
             c.append(("Large sway or trunk lean: may be compensating for hip weakness or a balance deficit.",
                       "تمايل كبير أو ميلان الجذع: قد يكون تعويضاً عن ضعف الورك أو خلل في التوازن."))
+    elif movement == "shoulder_flexion":
+        if bad("sh_flex"):
+            c.append(("Reduced forward arm elevation: consider assessing glenohumeral and scapular motion, pain, rotator cuff strength and thoracic extension.",
+                      "انخفاض رفع الذراع للأمام: يُنصح بتقييم حركة مفصل الكتف وعظم اللوح والألم وقوة الكفة المدوّرة ومرونة الفقرات الصدرية."))
+        if bad("trunk"):
+            c.append(("Leaning back to lift suggests compensation for limited shoulder motion.",
+                      "الميل للخلف أثناء الرفع يشير إلى تعويض عن محدودية حركة الكتف."))
+    elif movement == "hip_abduction":
+        if bad("hip_abd"):
+            c.append(("Reduced hip abduction: consider assessing hip joint mobility, gluteus medius strength, adductor tightness and pain.",
+                      "انخفاض تبعيد الورك: يُنصح بتقييم حركة مفصل الورك وقوة الألوية الوسطى وشدّ العضلات المقرِّبة والألم."))
+        if bad("trunk"):
+            c.append(("Sideways trunk lean may be substituting for hip motion.", "الميل الجانبي للجذع قد يحل محل حركة الورك."))
+    elif movement == "straight_leg_raise":
+        if bad("slr"):
+            c.append(("Limited straight leg raise: consider assessing hamstring length, neural tension, lumbar-pelvic control and hip flexor strength.",
+                      "محدودية رفع الساق المستقيمة: يُنصح بتقييم طول الأوتار الخلفية والشدّ العصبي والتحكم القطني-الحوضي وقوة القابضات."))
+        if bad("knee_lag"):
+            c.append(("Knee bends during the raise: consider assessing quadriceps strength (extensor lag) and hamstring tightness.",
+                      "ينثني الركبة أثناء الرفع: يُنصح بتقييم قوة العضلة الرباعية والأوتار الخلفية."))
+    elif movement == "gait":
+        if bad("cadence"):
+            c.append(("Cadence outside the usual range: consider assessing pain, strength, balance and walking aids.",
+                      "إيقاع المشي خارج المعتاد: يُنصح بتقييم الألم والقوة والتوازن ووسائل المساعدة على المشي."))
+        if bad("step_sym"):
+            c.append(("Uneven step timing between sides: consider assessing pain, weight-bearing tolerance and strength on the quicker-stepping side.",
+                      "اختلاف زمن الخطوة بين الجانبين: يُنصح بتقييم الألم وتحمل الوزن والقوة في الجانب الأسرع خطوة."))
+    elif movement == "tug":
+        if bad("tug_time"):
+            c.append(("Slow Timed Up and Go: consider assessing lower-limb strength, balance, gait speed, pain and fall risk; compare with age norms.",
+                      "بطء في اختبار الوقوف والمشي: يُنصح بتقييم قوة الطرفين السفليين والتوازن وسرعة المشي والألم وخطر السقوط ومقارنتها بالمعايير حسب العمر."))
+    elif movement == "posture":
+        if bad("head_fwd") or bad("sh_fwd"):
+            c.append(("Forward head or shoulder position: consider assessing neck and upper-back posture, deep neck flexor and scapular control.",
+                      "تقدّم الرأس أو الكتف: يُنصح بتقييم وضعية الرقبة والظهر العلوي وقوة العضلات القابضة العميقة للرقبة والتحكم باللوح."))
+        if bad("sh_tilt") or bad("hip_tilt") or bad("shift"):
+            c.append(("Uneven shoulder or pelvis level, or a trunk shift: consider assessing leg length, scoliosis screening and muscle imbalance.",
+                      "عدم تساوي مستوى الكتفين أو الحوض أو إزاحة الجذع: يُنصح بتقييم طول الساقين وفحص الجنف والخلل العضلي."))
+    elif movement == "neck":
+        if any(bad(k) for k in ("neck_flex", "neck_ext", "neck_tilt", "neck_rot")):
+            c.append(("Reduced neck motion in a direction: consider assessing pain, muscle guarding, cervical joint mobility and neurological screening as indicated.",
+                      "انخفاض حركة الرقبة في اتجاه ما: يُنصح بتقييم الألم والتشنج العضلي وحركة المفاصل العنقية والفحص العصبي عند الحاجة."))
+    elif movement == "wrist":
+        if bad("wrist_bend"):
+            c.append(("Reduced wrist bend: consider assessing pain, swelling, joint stiffness and forearm muscle tightness; confirm with a goniometer.",
+                      "انخفاض ثني الرسغ: يُنصح بتقييم الألم والتورم وتيبس المفصل وشدّ عضلات الساعد والتأكد بمقياس الزوايا."))
     if movement == "knee_bend" and bad("knee_ext"):
         c.append(("Knee does not fully straighten: consider assessing swelling/effusion, hamstring tightness, pain at end range "
                   "and quadriceps strength (extensor lag).",
@@ -830,10 +1210,15 @@ def annotate(video_path, P, fps, size, movement, comp, out_path, crop_paths, sid
         for j in used:
             if not np.isnan(P[i, j]).any():
                 cv2.circle(fr, tuple(P[i, j].astype(int)), 5, white, -1, cv2.LINE_AA)
-        if movement == "shoulder_raise":
-            draw_angle(fr, P[i, L_HIP], P[i, L_SH], P[i, L_EL], f"{S['sh_L'][i]:.0f}", blue)
-            draw_angle(fr, P[i, R_HIP], P[i, R_SH], P[i, R_EL], f"{S['sh_R'][i]:.0f}", orange)
-            hud = f"Arm  L:{S['sh_L'][i]:.0f}  R:{S['sh_R'][i]:.0f}"
+        if movement in ("shoulder_raise", "shoulder_flexion"):
+            sides = [side] if side else ["L", "R"]
+            for sd in sides:
+                h_, s_, e_ = (L_HIP, L_SH, L_EL) if sd == "L" else (R_HIP, R_SH, R_EL)
+                draw_angle(fr, P[i, h_], P[i, s_], P[i, e_], f"{S['sh_' + sd][i]:.0f}", blue if sd == "L" else orange)
+            hud = "Arm  " + "  ".join(f"{s_}:{S['sh_' + s_][i]:.0f}" for s_ in sides)
+        elif movement in ("hip_abduction", "straight_leg_raise", "gait", "tug", "posture", "neck", "wrist"):
+            vals = [ln[1][i] for ln in comp["plot"]["lines"]]
+            hud = comp["plot"]["hud"] + " " + "  ".join(f"{v:.0f}" for v in vals if not np.isnan(v))
         elif movement == "hip_flexion":
             sides = [side] if side else ["L", "R"]
             for sd in sides:
@@ -1300,8 +1685,9 @@ def run(video, movement, view, patient, outdir, lang="both", landmarks=None, com
     lm, fps, size = track(video) if landmarks is None else landmarks
     if len(lm) < 10:
         sys.exit("Video too short.")
-    side = visible_side(lm) if (view == "side" and movement in ("squat", "knee_bend", "hip_flexion", "sit_to_stand")) else None
-    if view == "side" and movement == "elbow_flexion":
+    side = visible_side(lm) if (view == "side" and movement in ("squat", "knee_bend", "hip_flexion", "sit_to_stand",
+                                                     "straight_leg_raise", "posture", "neck")) else None
+    if view == "side" and movement in ("elbow_flexion", "shoulder_flexion", "wrist"):
         side = visible_arm_side(lm)
     keys = needed(movement, side)
     P, rate = clean(lm, fps, keys)
