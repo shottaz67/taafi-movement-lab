@@ -9,7 +9,7 @@ No AI service and no internet needed once installed.
 Usage:
   python movement_lab.py video.mp4 --movement squat --view side --patient "Name"
   python movement_lab.py video2.mp4 --movement squat --view side --compare output/squat_results.json
-  movements: squat | shoulder_raise | knee_bend | elbow_flexion      view: side | front
+  movements: squat | shoulder_raise | knee_bend | elbow_flexion | hip_flexion | sit_to_stand | lunge | single_leg_balance      view: side | front
 """
 import argparse
 import datetime
@@ -37,6 +37,10 @@ MOVES = {
     "shoulder_raise": ("Shoulder raise (arm elevation)", "رفع الذراع (الكتف)"),
     "knee_bend": ("Knee flexion / extension", "ثني ومد الركبة"),
     "elbow_flexion": ("Elbow flexion / extension (arm curl)", "ثني ومد المرفق (الذراع)"),
+    "hip_flexion": ("Hip flexion (standing knee raise)", "ثني الورك (رفع الركبة وقوفاً)"),
+    "sit_to_stand": ("Sit-to-stand (5 repetitions)", "الجلوس والوقوف (٥ تكرارات)"),
+    "lunge": ("Lunge", "الطعنة (لانج)"),
+    "single_leg_balance": ("Single-leg balance", "التوازن على ساق واحدة"),
 }
 STATUS_EN = {"ok": "Within expected", "watch": "Worth monitoring", "flag": "Notable", "info": "Informational"}
 STATUS_AR = {"ok": "ضمن المتوقع", "watch": "يستحق المتابعة", "flag": "ملحوظ", "info": "معلومة"}
@@ -125,6 +129,8 @@ def series(P):
         "trunk": np.degrees(np.arctan2(np.abs(d[:, 0]), -d[:, 1])),
         "trunk_L": lean(L_SH, L_HIP), "trunk_R": lean(R_SH, R_HIP),
         "shin_L": shin(L_KN, L_AN), "shin_R": shin(R_KN, R_AN),
+        "hip_L": ang(P[:, L_SH], P[:, L_HIP], P[:, L_KN]),
+        "hip_R": ang(P[:, R_SH], P[:, R_HIP], P[:, R_KN]),
         "elb_L": ang(P[:, L_SH], P[:, L_EL], P[:, L_WR]),
         "elb_R": ang(P[:, R_SH], P[:, R_EL], P[:, R_WR]),
         "arm_L": upper_arm(L_SH, L_EL), "arm_R": upper_arm(R_SH, R_EL),
@@ -155,6 +161,8 @@ def visible_arm_side(lm):
 
 
 def needed(movement, side):
+    if movement in ("lunge", "single_leg_balance"):
+        return [L_HIP, R_HIP, L_KN, R_KN, L_AN, R_AN]
     if movement == "elbow_flexion":
         if side:
             return list((L_SH, L_EL, L_WR, L_HIP) if side == "L" else (R_SH, R_EL, R_WR, R_HIP))
@@ -192,10 +200,42 @@ def rep_windows(f, pk, thr=10):
     return out
 
 
+def longest_run(mask):
+    best, i, n = (0, 0), 0, len(mask)
+    while i < n:
+        if mask[i]:
+            j = i
+            while j < n and mask[j]:
+                j += 1
+            if j - i > best[1] - best[0]:
+                best = (i, j)
+            i = j
+        else:
+            i += 1
+    return best
+
+
+def windows_frac(g, pk, frac=0.25):
+    """Windows around peaks of g where g is above base + frac*(peak-base)."""
+    base = np.percentile(g, 10)
+    out = []
+    for i in pk:
+        lvl = base + frac * (g[i] - base)
+        a = int(i)
+        while a > 0 and g[a] > lvl:
+            a -= 1
+        b = int(i)
+        while b < len(g) - 1 and g[b] > lvl:
+            b += 1
+        out.append((a, int(i), b))
+    return out
+
+
 def compute(P, fps, movement, view, side=None):
     S = series(P)
     rows, notes, checks, chips = [], [], [], []
     reps, key_idx, wins, f, trunk_sig = 0, 0, [], None, S["trunk"]
+    plot = None
 
     def add(key, en, ar, status, **kw):
         d = dict(key=key, en=en, ar=ar, status=status, left=None, right=None, value=None, text=None,
@@ -400,6 +440,179 @@ def compute(P, fps, movement, view, side=None):
             notes.append(("Elbow flexion is measured most reliably from the side; from the front the forearm points toward "
                           "the camera and angles can be under-estimated.",
                           "يُقاس ثني المرفق بدقة أكبر من الجانب؛ من الأمام يتجه الساعد نحو الكاميرا وقد تقل الزوايا المقيسة."))
+    elif movement == "hip_flexion":
+        sides_ = [side] if side else ["L", "R"]
+        hf = {sd: 180 - S["hip_" + sd] for sd in sides_}
+        f = hf[side] if side else np.maximum(hf["L"], hf["R"])
+        pk, _ = find_peaks(f, prominence=20, distance=max(1, int(fps * 0.6)))
+        if len(pk) == 0:
+            pk = np.array([int(np.argmax(f))])
+            notes.append(("No clear repetitions were detected; the highest knee point of the video was used.",
+                          "لم يتم رصد تكرارات واضحة؛ تم اعتماد أعلى نقطة للركبة في الفيديو."))
+        wins = rep_windows(f, pk, thr=8)
+        reps = len(pk)
+        key_idx = int(pk[np.argmax(f[pk])])
+        ref_en, ref_ar = ("Active hip flexion with the knee raised ~90-120 deg",
+                          "ثني الورك الفعّال مع رفع الركبة ~90-120 درجة")
+        if side:
+            m = float(np.mean(hf[side][pk]))
+            r1 = side_row("hip_flex", "Maximum hip flexion", "أقصى ثني للورك", m, side, 80, 60, ref_en, ref_ar)
+            chip("Hip flexion", "ثني الورك", f"{m:.0f}°", r1["status"])
+        else:
+            mL, mR = float(np.percentile(hf["L"], 98)), float(np.percentile(hf["R"], 98))
+            if min(mL, mR) < 25:
+                weak = "L" if mL < mR else "R"
+                notes.append((f"The {SIDE_EN[weak]} knee was barely lifted, so a left/right comparison is not meaningful. "
+                              "Lift both knees in turn.",
+                              f"الركبة {SIDE_AR[weak]} لم تُرفع تقريباً، لذلك لا يصح المقارنة بين الجانبين. ارفع الركبتين بالتناوب."))
+            r1 = pair_row("hip_flex", "Maximum hip flexion", "أقصى ثني للورك", mL, mR, "deg", ref_en, ref_ar)
+            chip("Left/right hip", "تماثل الورك", f"{r1['asym']}%", r1["status"])
+            notes.append(("From the front the thigh points toward the camera, so hip angles are under-estimated; "
+                          "side view is more reliable.",
+                          "من الأمام يتجه الفخذ نحو الكاميرا فتقل الزوايا المقيسة؛ التصوير الجانبي أدق."))
+        trunk_sig = S[f"trunk_{side}"] if side else S["trunk"]
+        tr = float(np.max(trunk_sig[pk]))
+        r2 = single_row("trunk", "Trunk lean while lifting the knee", "ميلان الجذع أثناء رفع الركبة", tr, "deg", 10, 20,
+                        "Body should stay upright", "يجب أن يبقى الجسم منتصباً")
+        chip("Trunk lean", "ميلان الجذع", f"{tr:.0f}°", r2["status"])
+        dn = float(np.mean([(i - a) / fps for a, i, b in wins]))
+        up = float(np.mean([(b - i) / fps for a, i, b in wins]))
+        info_row("tempo", "Lift / lower time (average)", "زمن الرفع / الإنزال (المتوسط)", f"{dn:.1f} s / {up:.1f} s")
+        plot = dict(title="Hip flexion over time", ylabel="flexion (deg)",
+                    lines=[((("Left" if sd == "L" else "Right") if side else ("Left" if sd == "L" else "Right")), hf[sd],
+                            "#3F6200" if side else ("#2f80ed" if sd == "L" else "#f2994a")) for sd in sides_])
+
+    elif movement == "sit_to_stand":
+        g = S[f"knee_{side}"] if side else (S["knee_L"] + S["knee_R"]) / 2      # 180 = standing straight
+        pk, _ = find_peaks(g, prominence=25, distance=max(1, int(fps * 0.6)))
+        if len(pk) == 0:
+            pk = np.array([int(np.argmax(g))])
+            notes.append(("No clear stand-ups were detected. Film the whole body, seated to standing, 5 times.",
+                          "لم يتم رصد حالات وقوف واضحة. صوّر الجسم كاملاً من الجلوس إلى الوقوف ٥ مرات."))
+        wins = windows_frac(g, pk, 0.25)
+        reps = len(pk)
+        f = g
+        key_idx = int(pk[len(pk) // 2])
+        span = (pk[-1] - wins[0][0]) / fps
+        rise0 = max((pk[0] - wins[0][0]) / fps, 0.1)
+        cyc = (pk[-1] - pk[0]) / (reps - 1) / fps if reps >= 2 else 2 * rise0
+        t5 = rise0 + 4 * cyc            # first seat-off to the 5th stand
+        if reps < 2:
+            notes.append(("Only one stand was counted, so the 5-stand time is a rough estimate. Film 5 full repetitions.",
+                          "تم رصد وقفة واحدة فقط، لذا زمن ٥ تكرارات تقدير تقريبي. صوّر ٥ تكرارات كاملة."))
+        r1 = single_row("sts_time", "Time for the stands (scaled to 5 repetitions)", "زمن الوقوف (محسوب لـ ٥ تكرارات)", t5, "s", 12, 15,
+                        "Adults usually take under ~12 s for 5 stands; over ~15 s is linked to higher fall risk in older adults",
+                        "عادةً أقل من ~12 ثانية لـ ٥ تكرارات؛ أكثر من ~15 ثانية يرتبط بخطر سقوط أعلى لدى كبار السن")
+        chip("5-stand time", "زمن ٥ تكرارات", f"{t5:.1f} s", r1["status"])
+        info_row("sts_reps", "Stands counted", "عدد مرات الوقوف", f"{reps} in {span:.1f} s")
+        ext = float(np.mean(180 - g[pk]))
+        r2 = single_row("sts_ext", "Knee bend left when fully standing", "ثني الركبة المتبقي عند الوقوف الكامل", ext, "deg", 15, 25,
+                        "Should stand fully upright (about 0-10 deg of bend)", "يجب الوقوف باعتدال كامل (~0-10 درجات)")
+        chip("Standing up", "الوقوف", f"{ext:.0f}° bend left", r2["status"])
+        trunk_sig = S[f"trunk_{side}"] if side else S["trunk"]
+        tr = float(np.max([np.max(trunk_sig[a:i + 1]) for a, i, b in wins]))
+        r3 = single_row("trunk", "Forward trunk lean while rising", "ميلان الجذع للأمام أثناء النهوض", tr, "deg", 55, 70,
+                        "A moderate forward lean (about 30-50 deg) is normal", "الميلان المعتدل للأمام (~30-50 درجة) طبيعي")
+        chip("Trunk lean", "ميلان الجذع", f"{tr:.0f}°", r3["status"])
+        if len(pk) >= 2:
+            rises = [(i - a) / fps for a, i, b in wins]
+            info_row("tempo", "Rise time per stand (fastest / slowest)", "زمن النهوض (الأسرع / الأبطأ)",
+                     f"{min(rises):.1f} s / {max(rises):.1f} s", "A slowing pattern can reflect fatigue")
+        plot = dict(title="Knee angle over time (180 = standing straight)", ylabel="knee angle (deg)",
+                    lines=[("Knee angle", g, "#3F6200")])
+        notes.append(("Standard test: arms crossed on the chest, same chair each time, stand fully then sit, 5 times.",
+                      "الاختبار القياسي: الذراعان متقاطعتان على الصدر، نفس الكرسي كل مرة، وقوف كامل ثم جلوس، ٥ مرات."))
+
+    elif movement == "lunge":
+        fl = {sd: 180 - S["knee_" + sd] for sd in ("L", "R")}
+        f = np.maximum(fl["L"], fl["R"])
+        pk, _ = find_peaks(f, prominence=25, distance=max(1, int(fps * 0.8)))
+        if len(pk) == 0:
+            pk = np.array([int(np.argmax(f))])
+            notes.append(("No clear repetitions were detected; the deepest point of the video was used.",
+                          "لم يتم رصد تكرارات واضحة؛ تم اعتماد أعمق نقطة في الفيديو."))
+        wins = rep_windows(f, pk)
+        reps = len(pk)
+        key_idx = int(pk[np.argmax(f[pk])])
+        mL, mR = float(np.mean(fl["L"][pk])), float(np.mean(fl["R"][pk]))
+        fs = "L" if mL >= mR else "R"
+        front, back = max(mL, mR), min(mL, mR)
+        r1 = side_row("lunge_front", "Front knee flexion at the bottom", "ثني الركبة الأمامية عند أدنى نقطة", front, fs, 85, 65,
+                      "Front knee ~90-110 deg of flexion at the bottom of a lunge", "الركبة الأمامية ~90-110 درجة عند أدنى نقطة")
+        chip("Front knee", "الركبة الأمامية", f"{front:.0f}°", r1["status"])
+        info_row("lunge_back", "Back knee flexion at the bottom", "ثني الركبة الخلفية عند أدنى نقطة", f"{back:.0f} deg")
+        tr = float(np.max(S["trunk"][pk]))
+        if view == "front":
+            r2 = single_row("trunk", "Sideways trunk lean at the bottom", "ميلان الجذع جانبياً", tr, "deg", 6, 10,
+                            "Should stay near vertical", "يجب أن يبقى قريباً من العمودي")
+            v = float(np.mean([medial_knee_dev(P, i, fs) for i in pk]))
+            r3 = single_row("valgus", "Front knee falling inward", "ميل الركبة الأمامية للداخل", v, "% leg", 5, 10,
+                            "Knee should track over the foot", "الركبة تتبع اتجاه القدم")
+            chip("Knee alignment", "محاذاة الركبة", f"{v:.0f}%", r3["status"])
+        else:
+            r2 = single_row("trunk", "Trunk lean at the bottom", "ميلان الجذع عند أدنى نقطة", tr, "deg", 25, 40,
+                            "Trunk should stay fairly upright", "يجب أن يبقى الجذع منتصباً نسبياً")
+        chip("Trunk lean", "ميلان الجذع", f"{tr:.0f}°", r2["status"])
+        if len(pk) >= 2:
+            rng = float(np.max(f[pk]) - np.min(f[pk]))
+            r4 = single_row("rep_range", "Depth difference between repetitions", "فرق العمق بين التكرارات", rng, "deg", 5, 10,
+                            "Similar depth each rep suggests steady control", "عمق متقارب يدل على ثبات التحكم")
+        dn = float(np.mean([(i - a) / fps for a, i, b in wins]))
+        up = float(np.mean([(b - i) / fps for a, i, b in wins]))
+        info_row("tempo", "Descent / ascent time (average)", "زمن النزول / الصعود (المتوسط)", f"{dn:.1f} s / {up:.1f} s")
+        info_row("lunge_leg", "Front leg", "الساق الأمامية", "left" if fs == "L" else "right")
+        plot = dict(title="Knee flexion over time", ylabel="flexion (deg)",
+                    lines=[("Left knee", fl["L"], "#2f80ed"), ("Right knee", fl["R"], "#f2994a")],
+                    trunk_title="Trunk lean from vertical (sideways)" if view == "front" else "Trunk lean from vertical (forward)")
+
+    elif movement == "single_leg_balance":
+        aL, aR = P[:, L_AN, 1], P[:, R_AN, 1]
+        stance = "L" if np.nanmedian(aL) > np.nanmedian(aR) else "R"
+        lift_sd = "R" if stance == "L" else "L"
+        h_st, a_st = (L_HIP, L_AN) if stance == "L" else (R_HIP, R_AN)
+        h_lf, a_lf = (L_HIP, L_AN) if lift_sd == "L" else (R_HIP, R_AN)
+        leg_len = float(np.nanmedian(np.abs(P[:, a_st, 1] - P[:, h_st, 1]))) + 1e-9
+        hip_w = float(np.nanmedian(np.abs(P[:, L_HIP, 0] - P[:, R_HIP, 0]))) + 1e-9
+        lift = (P[:, a_st, 1] - P[:, a_lf, 1]) / leg_len * 100
+        f = lift
+        a, b = longest_run(lift > 12)
+        n_ = len(lift)
+        if b - a < int(fps * 0.5):
+            a, b = 0, n_
+            notes.append(("No clearly lifted foot was detected. Film the front view, one foot lifted off the floor, "
+                          "holding as long as possible.",
+                          "لم يتم رصد قدم مرفوعة بوضوح. صوّر من الأمام مع رفع قدم واحدة عن الأرض والثبات أطول وقت."))
+            hold = 0.0
+        else:
+            hold = (b - a) / fps
+        seg = slice(a, b)
+        st_h = "ok" if hold >= 10 else ("watch" if hold >= 5 else "flag")
+        add("hold", "Hold time (foot lifted)", "مدة الثبات (القدم مرفوعة)", st_h, value=round(hold, 1), unit="s",
+            ref_en="Eyes open: about 10 s or more is expected for most adults under 60",
+            ref_ar="عينان مفتوحتان: يُتوقع حوالي ١٠ ثوانٍ أو أكثر لمعظم البالغين دون الستين")
+        chip("Hold time", "مدة الثبات", f"{hold:.0f} s", st_h)
+        drop = float(np.nanmean((P[seg, h_lf, 1] - P[seg, h_st, 1]) / hip_w * 100))
+        r2 = single_row("pelvic_drop", "Pelvis drop on the lifted side", "هبوط الحوض في جهة الساق المرفوعة", max(drop, 0.0), "% width",
+                        10, 20, "Pelvis should stay level (a drop suggests hip abductor weakness)",
+                        "يجب أن يبقى الحوض مستوياً (الهبوط يوحي بضعف العضلات المبعدة للورك)")
+        chip("Pelvic drop", "هبوط الحوض", f"{max(drop, 0):.0f}%", r2["status"])
+        cx = (P[seg, L_HIP, 0] + P[seg, R_HIP, 0]) / 2
+        sway = float((np.nanpercentile(cx, 95) - np.nanpercentile(cx, 5)) / hip_w * 100)
+        r3 = single_row("sway", "Side-to-side sway of the hips", "التمايل الجانبي للحوض", sway, "% width", 20, 40,
+                        "Less sway means steadier balance", "التمايل الأقل يعني توازناً أثبت")
+        chip("Sway", "التمايل", f"{sway:.0f}%", r3["status"])
+        trk = float(np.nanmax(S["trunk"][seg]))
+        single_row("trunk", "Sideways trunk lean during the hold", "ميلان الجذع جانبياً أثناء الثبات", trk, "deg", 6, 10,
+                   "Trunk should stay near vertical", "يجب أن يبقى الجذع قريباً من العمودي")
+        info_row("stance", "Standing leg", "الساق الثابتة", "left" if stance == "L" else "right")
+        reps = 1
+        key_idx = int((a + b) // 2)
+        wins = [(int(a), key_idx, int(b - 1))]
+        plot = dict(title="Height of the lifted foot over time (% of leg length)", ylabel="lift (%)",
+                    lines=[("Lifted foot", lift, "#3F6200")], trunk_title="Trunk lean from vertical (sideways)")
+        if view == "side":
+            notes.append(("Single-leg balance is best filmed from the front so pelvis drop and sway can be seen.",
+                          "يفضل تصوير التوازن على ساق واحدة من الأمام لرؤية هبوط الحوض والتمايل."))
     else:
         sys.exit("unknown movement")
 
@@ -423,7 +636,7 @@ def compute(P, fps, movement, view, side=None):
     R = {r["key"]: r for r in rows}
     checks = clinician_checks(movement, side, R)
     return dict(rows=rows, notes=notes, key_idx=key_idx, reps=reps, series=S, side=side, rep_table=rep_table,
-                chips=chips, frames_idx=frames_idx, checks=checks, wins=wins)
+                chips=chips, frames_idx=frames_idx, checks=checks, wins=wins, plot=plot)
 
 
 def clinician_checks(movement, side, R):
@@ -472,6 +685,45 @@ def clinician_checks(movement, side, R):
             c.append(("Compensation (trunk swing or shoulder movement) suggests momentum is helping the curl; consider lighter "
                       "load or assessing trunk and shoulder control.",
                       "التعويض (تأرجح الجذع أو حركة الكتف) يشير إلى أن الزخم يساعد الحركة؛ فكّر بحمل أخف أو قيّم تحكم الجذع والكتف."))
+    elif movement == "hip_flexion":
+        if bad("hip_flex"):
+            c.append(("Reduced hip flexion: consider assessing hip joint mobility, hip flexor strength, pain or pinching at "
+                      "end range, and lumbar-pelvic compensation.",
+                      "انخفاض ثني الورك: يُنصح بتقييم حركة مفصل الورك وقوة العضلات القابضة للورك والألم أو الانحشار عند نهاية المدى والتعويض من أسفل الظهر والحوض."))
+        if bad("trunk"):
+            c.append(("Trunk leaning to lift the knee suggests compensation; consider assessing core and hip control.",
+                      "ميلان الجذع لرفع الركبة يشير إلى تعويض؛ يُنصح بتقييم التحكم بعضلات الجذع والورك."))
+    elif movement == "sit_to_stand":
+        if bad("sts_time"):
+            c.append(("Slow sit-to-stand: consider assessing quadriceps and gluteal strength, balance, pain, and fear of falling; "
+                      "compare with age-based norms.",
+                      "بطء في الجلوس والوقوف: يُنصح بتقييم قوة العضلة الرباعية والألوية والتوازن والألم والخوف من السقوط ومقارنتها بالمعايير حسب العمر."))
+        if bad("sts_ext"):
+            c.append(("Not standing fully upright: consider assessing hip/knee extension strength, pain, and balance.",
+                      "عدم الوقوف باعتدال كامل: يُنصح بتقييم قوة مد الورك والركبة والألم والتوازن."))
+        if bad("trunk"):
+            c.append(("Marked forward lean while rising: consider assessing ankle mobility and quadriceps strength.",
+                      "ميلان واضح للأمام أثناء النهوض: يُنصح بتقييم حركة الكاحل وقوة العضلة الرباعية."))
+    elif movement == "lunge":
+        if bad("lunge_front"):
+            c.append(("Limited lunge depth: consider assessing pain, ankle and hip mobility, and quadriceps/gluteal strength.",
+                      "عمق محدود في الطعنة: يُنصح بتقييم الألم وحركة الكاحل والورك وقوة العضلة الرباعية والألوية."))
+        if bad("valgus"):
+            c.append(("Front knee drifting inward: consider assessing hip abductor/external rotator strength and foot posture.",
+                      "ميل الركبة الأمامية للداخل: يُنصح بتقييم قوة العضلات المبعِّدة والمدوِّرة للخارج للورك ووضعية القدم."))
+        if bad("trunk"):
+            c.append(("Marked trunk lean: consider assessing balance, hip mobility and trunk control.",
+                      "ميلان واضح للجذع: يُنصح بتقييم التوازن ومرونة الورك والتحكم بالجذع."))
+    elif movement == "single_leg_balance":
+        if bad("hold"):
+            c.append(("Short single-leg hold: consider assessing balance/proprioception, ankle stability, hip abductor strength and pain.",
+                      "قِصر مدة الثبات على ساق واحدة: يُنصح بتقييم التوازن والحس العميق وثبات الكاحل وقوة العضلات المبعِّدة للورك والألم."))
+        if bad("pelvic_drop"):
+            c.append(("Pelvis drops on the lifted side (Trendelenburg pattern): consider assessing gluteus medius strength of the standing leg.",
+                      "هبوط الحوض في جهة الساق المرفوعة (نمط ترندلنبرغ): يُنصح بتقييم قوة العضلة الألوية الوسطى في الساق الثابتة."))
+        if bad("sway") or bad("trunk"):
+            c.append(("Large sway or trunk lean: may be compensating for hip weakness or a balance deficit.",
+                      "تمايل كبير أو ميلان الجذع: قد يكون تعويضاً عن ضعف الورك أو خلل في التوازن."))
     if movement == "knee_bend" and bad("knee_ext"):
         c.append(("Knee does not fully straighten: consider assessing swelling/effusion, hamstring tightness, pain at end range "
                   "and quadriceps strength (extensor lag).",
@@ -576,11 +828,22 @@ def annotate(video_path, P, fps, size, movement, comp, out_path, crop_paths, sid
             col = blue if (a % 2 == 1 and b % 2 == 1) else (orange if (a % 2 == 0 and b % 2 == 0) else white)
             cv2.line(fr, tuple(P[i, a].astype(int)), tuple(P[i, b].astype(int)), col, 3, cv2.LINE_AA)
         for j in used:
-            cv2.circle(fr, tuple(P[i, j].astype(int)), 5, white, -1, cv2.LINE_AA)
+            if not np.isnan(P[i, j]).any():
+                cv2.circle(fr, tuple(P[i, j].astype(int)), 5, white, -1, cv2.LINE_AA)
         if movement == "shoulder_raise":
             draw_angle(fr, P[i, L_HIP], P[i, L_SH], P[i, L_EL], f"{S['sh_L'][i]:.0f}", blue)
             draw_angle(fr, P[i, R_HIP], P[i, R_SH], P[i, R_EL], f"{S['sh_R'][i]:.0f}", orange)
             hud = f"Arm  L:{S['sh_L'][i]:.0f}  R:{S['sh_R'][i]:.0f}"
+        elif movement == "hip_flexion":
+            sides = [side] if side else ["L", "R"]
+            for sd in sides:
+                sh_, hp_, kn_ = (L_SH, L_HIP, L_KN) if sd == "L" else (R_SH, R_HIP, R_KN)
+                draw_angle(fr, P[i, sh_], P[i, hp_], P[i, kn_], f"{180 - S['hip_' + sd][i]:.0f}", blue if sd == "L" else orange)
+            hud = "Hip flexion " + "  ".join(f"{s_}:{180 - S['hip_' + s_][i]:.0f}" for s_ in sides)
+        elif movement == "single_leg_balance":
+            if not (np.isnan(P[i, L_HIP]).any() or np.isnan(P[i, R_HIP]).any()):
+                cv2.line(fr, tuple(P[i, L_HIP].astype(int)), tuple(P[i, R_HIP].astype(int)), (60, 200, 60), 3, cv2.LINE_AA)
+            hud = f"Foot lift {comp['plot']['lines'][0][1][i]:.0f}% of leg"
         elif movement == "elbow_flexion":
             sides = [side] if side else ["L", "R"]
             for sd in sides:
@@ -623,7 +886,12 @@ def chart(comp, fps, movement, path, side=None):
     axes = np.atleast_1d(axes)
     t = np.arange(len(S["trunk"])) / fps
     ax = axes[0]
-    if movement == "shoulder_raise":
+    if comp.get("plot"):
+        for lab, arr, col in comp["plot"]["lines"]:
+            ax.plot(t, arr, color=col, lw=2, label=lab)
+        ax.set_ylabel(comp["plot"]["ylabel"])
+        ax.set_title(comp["plot"]["title"], fontsize=10)
+    elif movement == "shoulder_raise":
         ax.plot(t, S["sh_L"], color="#2f80ed", lw=2, label="Left arm")
         ax.plot(t, S["sh_R"], color="#f2994a", lw=2, label="Right arm")
         ax.set_ylabel("elevation (deg)")
@@ -658,7 +926,8 @@ def chart(comp, fps, movement, path, side=None):
         key = "trunk" if (not side) else f"trunk_{side}"
         ax2.plot(t, S[key], color="#70B000", lw=2)
         ax2.set_ylabel("trunk lean (deg)")
-        ax2.set_title("Trunk lean from vertical (forward)" if side else "Trunk lean from vertical (sideways)", fontsize=9)
+        ax2.set_title((comp.get("plot") or {}).get("trunk_title") or
+                      ("Trunk lean from vertical (forward)" if side else "Trunk lean from vertical (sideways)"), fontsize=9)
     axes[-1].set_xlabel("seconds")
     for a_ in axes:
         a_.grid(alpha=.25)
@@ -1031,7 +1300,7 @@ def run(video, movement, view, patient, outdir, lang="both", landmarks=None, com
     lm, fps, size = track(video) if landmarks is None else landmarks
     if len(lm) < 10:
         sys.exit("Video too short.")
-    side = visible_side(lm) if (view == "side" and movement in ("squat", "knee_bend")) else None
+    side = visible_side(lm) if (view == "side" and movement in ("squat", "knee_bend", "hip_flexion", "sit_to_stand")) else None
     if view == "side" and movement == "elbow_flexion":
         side = visible_arm_side(lm)
     keys = needed(movement, side)
@@ -1063,7 +1332,7 @@ def run(video, movement, view, patient, outdir, lang="both", landmarks=None, com
         if prev.get("movement") != movement:
             prev = None
     build_pdf(base + "_report.pdf", meta, comp, fnd, crops, chart_img, lang, prev)
-    dump = {k: v for k, v in comp.items() if k not in ("series", "wins")}
+    dump = {k: v for k, v in comp.items() if k not in ("series", "wins", "plot")}
     dump.update(detect_rate=round(rate, 3), date=meta["date"], movement=movement, view=view, patient=patient)
     with open(base + "_results.json", "w", encoding="utf-8") as f:
         json.dump(dump, f, ensure_ascii=False, indent=2, default=float)

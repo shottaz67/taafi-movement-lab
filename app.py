@@ -12,7 +12,19 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 LABELS = {"squat": ("Squat", "القرفصاء"),
           "shoulder_raise": ("Shoulder raise (arm elevation)", "رفع الذراع"),
           "knee_bend": ("Knee flexion / extension", "ثني ومد الركبة"),
-          "elbow_flexion": ("Elbow flexion / extension (arm curl)", "ثني ومد المرفق (الذراع)")}
+          "elbow_flexion": ("Elbow flexion / extension (arm curl)", "ثني ومد المرفق (الذراع)"),
+          "hip_flexion": ("Hip flexion (standing knee raise)", "ثني الورك (رفع الركبة وقوفاً)"),
+          "sit_to_stand": ("Sit-to-stand (5 repetitions)", "الجلوس والوقوف (٥ تكرارات)"),
+          "lunge": ("Lunge", "الطعنة (لانج)"),
+          "single_leg_balance": ("Single-leg balance", "التوازن على ساق واحدة")}
+TIPS = {"squat": ("Side view for depth; front view to compare left and right.", "من الجانب للعمق، ومن الأمام للمقارنة بين الجانبين."),
+        "shoulder_raise": ("Front view, arms start by the sides, raise both arms slowly.", "من الأمام، الذراعان بجانب الجسم ثم ارفعهما ببطء."),
+        "knee_bend": ("Side view. Bend the knee fully, then straighten fully (standing or seated).", "من الجانب. اثنِ الركبة بالكامل ثم مدّها بالكامل (وقوفاً أو جلوساً)."),
+        "elbow_flexion": ("Side view, arm hanging straight, curl up, then lower fully.", "من الجانب، الذراع مستقيمة للأسفل، اثنِها للأعلى ثم أنزلها بالكامل."),
+        "hip_flexion": ("Side view, raise the knee toward the chest, 3-5 times each leg.", "من الجانب، ارفع الركبة نحو الصدر من ٣ إلى ٥ مرات لكل ساق."),
+        "sit_to_stand": ("Side view, arms crossed, stand fully then sit, 5 times. Whole body and chair in frame.", "من الجانب، الذراعان متقاطعتان، وقوف كامل ثم جلوس ٥ مرات، الجسم والكرسي في الإطار."),
+        "lunge": ("Side view (depth) or front view (knee alignment), 3-5 slow lunges.", "من الجانب (العمق) أو من الأمام (محاذاة الركبة)، من ٣ إلى ٥ طعنات بطيئة."),
+        "single_leg_balance": ("Front view, lift one foot and hold as long as possible (up to 30 s).", "من الأمام، ارفع قدماً واحدة وثبّت أطول وقت ممكن (حتى ٣٠ ثانية).")}
 GREEN, OLIVE = "#70B000", "#3F6200"
 CHIP_COL = {"ok": GREEN, "watch": "#D99A1A", "flag": "#C8403A", "info": "#7A8691"}
 
@@ -117,8 +129,9 @@ if gate():
     bar("1 · Movement", "١ · الحركة")
     movement = st.selectbox("Movement", list(LABELS), format_func=lambda m: f"{LABELS[m][0]}   ·   {LABELS[m][1]}",
                             label_visibility="collapsed")
-    view = st.radio("Camera view", ["side", "front"], horizontal=True, index=1 if movement == "shoulder_raise" else 0,
+    view = st.radio("Camera view", ["side", "front"], horizontal=True, index=1 if movement in ("shoulder_raise", "single_leg_balance") else 0,
                     format_func=lambda v: {"side": "Side view · جانبي", "front": "Front view · أمامي"}[v])
+    st.caption(f"{TIPS[movement][0]}  ·  {TIPS[movement][1]}")
     patient = st.text_input("Name or label (optional) · الاسم أو الرمز (اختياري)")
 
     bar("2 · Video", "٢ · الفيديو")
