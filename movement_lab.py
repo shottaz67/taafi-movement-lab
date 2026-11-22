@@ -9,7 +9,7 @@ No AI service and no internet needed once installed.
 Usage:
   python movement_lab.py video.mp4 --movement squat --view side --patient "Name"
   python movement_lab.py video2.mp4 --movement squat --view side --compare output/squat_results.json
-  movements: squat | shoulder_raise | knee_bend      view: side | front
+  movements: squat | shoulder_raise | knee_bend | elbow_flexion      view: side | front
 """
 import argparse
 import datetime
@@ -35,7 +35,8 @@ BONES = [(11, 12), (11, 13), (13, 15), (12, 14), (14, 16), (11, 23), (12, 24),
 MOVES = {
     "squat": ("Squat", "القرفصاء (سكوات)"),
     "shoulder_raise": ("Shoulder raise (arm elevation)", "رفع الذراع (الكتف)"),
-    "knee_bend": ("Standing knee bend", "ثني الركبة وقوفاً"),
+    "knee_bend": ("Knee flexion / extension", "ثني ومد الركبة"),
+    "elbow_flexion": ("Elbow flexion / extension (arm curl)", "ثني ومد المرفق (الذراع)"),
 }
 STATUS_EN = {"ok": "Within expected", "watch": "Worth monitoring", "flag": "Notable", "info": "Informational"}
 STATUS_AR = {"ok": "ضمن المتوقع", "watch": "يستحق المتابعة", "flag": "ملحوظ", "info": "معلومة"}
@@ -112,6 +113,10 @@ def series(P):
         dd = P[:, kn] - P[:, an]
         return np.degrees(np.arctan2(np.abs(dd[:, 0]), np.abs(dd[:, 1]) + 1e-9))
 
+    def upper_arm(sh, el):
+        dd = P[:, el] - P[:, sh]
+        return np.degrees(np.arctan2(np.abs(dd[:, 0]), np.abs(dd[:, 1]) + 1e-9))
+
     return {
         "knee_L": ang(P[:, L_HIP], P[:, L_KN], P[:, L_AN]),
         "knee_R": ang(P[:, R_HIP], P[:, R_KN], P[:, R_AN]),
@@ -120,6 +125,9 @@ def series(P):
         "trunk": np.degrees(np.arctan2(np.abs(d[:, 0]), -d[:, 1])),
         "trunk_L": lean(L_SH, L_HIP), "trunk_R": lean(R_SH, R_HIP),
         "shin_L": shin(L_KN, L_AN), "shin_R": shin(R_KN, R_AN),
+        "elb_L": ang(P[:, L_SH], P[:, L_EL], P[:, L_WR]),
+        "elb_R": ang(P[:, R_SH], P[:, R_EL], P[:, R_WR]),
+        "arm_L": upper_arm(L_SH, L_EL), "arm_R": upper_arm(R_SH, R_EL),
         "sh_diff": np.abs(P[:, L_SH, 1] - P[:, R_SH, 1]) / sw * 100,
     }
 
@@ -140,7 +148,17 @@ def visible_side(lm):
     return "L" if m([L_HIP, L_KN, L_AN]) >= m([R_HIP, R_KN, R_AN]) else "R"
 
 
+def visible_arm_side(lm):
+    def m(ids):
+        return float(np.nanmean(lm[:, ids, 2]))
+    return "L" if m([L_SH, L_EL, L_WR]) >= m([R_SH, R_EL, R_WR]) else "R"
+
+
 def needed(movement, side):
+    if movement == "elbow_flexion":
+        if side:
+            return list((L_SH, L_EL, L_WR, L_HIP) if side == "L" else (R_SH, R_EL, R_WR, R_HIP))
+        return [L_SH, R_SH, L_EL, R_EL, L_WR, R_WR, L_HIP, R_HIP]
     if side:
         return list((L_SH, L_HIP, L_KN, L_AN) if side == "L" else (R_SH, R_HIP, R_KN, R_AN))
     if movement == "shoulder_raise":
@@ -319,6 +337,69 @@ def compute(P, fps, movement, view, side=None):
         wins = rep_windows(f, pk)
         reps = len(pk)
         trunk_sig = S["trunk"]
+        sides_ = [side] if side else ["L", "R"]
+        ext = {sd: float(np.percentile(180 - S["knee_" + sd], 5)) for sd in sides_}
+        worst = max(ext, key=ext.get)
+        r2 = single_row("knee_ext", "Knee extension (how straight the knee gets)", "مد الركبة (مدى استقامتها)", ext[worst], "deg",
+                        10, 20, "Full extension ~0 deg; a remaining bend above ~10 deg is an extension deficit",
+                        "المد الكامل ~0 درجة؛ بقاء ثني أكثر من ~10 درجات يعني نقصاً في المد")
+        chip("Extension", "المد", f"{ext[worst]:.0f}° bend left", r2["status"])
+        rom = {sd: float(np.max(180 - S["knee_" + sd]) - ext[sd]) for sd in sides_}
+        info_row("knee_rom", "Total range of motion (flexion minus extension)", "مدى الحركة الكلي (الثني ناقص المد)",
+                 "  ".join(f"{SIDE_EN[sd]} {rom[sd]:.0f} deg" for sd in sides_))
+    elif movement == "elbow_flexion":
+        sides_ = [side] if side else ["L", "R"]
+        fl = {sd: 180 - S["elb_" + sd] for sd in sides_}
+        f = fl[side] if side else np.maximum(fl["L"], fl["R"])
+        key_idx = int(np.argmax(f))
+        pk, _ = find_peaks(f, prominence=30, distance=max(1, int(fps * 0.8)))
+        if len(pk) == 0:
+            pk = np.array([key_idx])
+            notes.append(("No clear repetitions were detected; the point of maximum bend was used.",
+                          "لم يتم رصد تكرارات واضحة؛ تم اعتماد نقطة أقصى ثني."))
+        wins = rep_windows(f, pk)
+        reps = len(pk)
+        key_idx = int(pk[np.argmax(f[pk])])
+        if side:
+            m = float(np.mean(fl[side][pk]))
+            r1 = side_row("elbow_flex", "Maximum elbow flexion", "أقصى ثني للمرفق", m, side, 125, 100,
+                          "Normal ~140-150 deg", "الطبيعي ~140-150 درجة")
+        else:
+            mL, mR = float(np.mean(fl["L"][pk])), float(np.mean(fl["R"][pk]))
+            if min(mL, mR) < 30:
+                weak = "L" if mL < mR else "R"
+                notes.append((f"The {SIDE_EN[weak]} elbow barely bent, so a left/right comparison is not meaningful. "
+                              "Film both arms bending.",
+                              f"المرفق {SIDE_AR[weak]} لم ينثنِ تقريباً، لذلك لا يصح المقارنة بين الجانبين. صوّر ثني الذراعين."))
+            r1 = pair_row("elbow_flex", "Maximum elbow flexion", "أقصى ثني للمرفق", mL, mR, "deg",
+                          "Normal ~140-150 deg", "الطبيعي ~140-150 درجة")
+        chip("Elbow flexion" if side else "Left/right flexion", "ثني المرفق" if side else "تماثل الثني",
+             f"{m:.0f}°" if side else f"{r1['asym']}%", r1["status"])
+        ext = {sd: float(np.percentile(fl[sd], 5)) for sd in sides_}
+        worst = max(ext, key=ext.get)
+        r2 = single_row("elbow_ext", "Elbow extension (how straight the arm gets)", "مد المرفق (مدى استقامة الذراع)", ext[worst],
+                        "deg", 10, 20, "Full extension ~0 deg; a remaining bend above ~10 deg is an extension deficit",
+                        "المد الكامل ~0 درجة؛ بقاء ثني أكثر من ~10 درجات يعني نقصاً في المد")
+        chip("Extension", "المد", f"{ext[worst]:.0f}° bend left", r2["status"])
+        info_row("elbow_rom", "Total range of motion (flexion minus extension)", "مدى الحركة الكلي (الثني ناقص المد)",
+                 "  ".join(f"{SIDE_EN[sd]} {float(np.max(fl[sd]) - ext[sd]):.0f} deg" for sd in sides_))
+        sw = max(float(np.percentile(S["arm_" + sd], 95) - np.percentile(S["arm_" + sd], 5)) for sd in sides_)
+        r4 = single_row("arm_swing", "Upper-arm movement during the curl (should stay by the side)",
+                        "حركة العضد أثناء الثني (يجب أن يبقى بجانب الجسم)", sw, "deg", 25, 40,
+                        "Large movement suggests the shoulder is helping", "الحركة الكبيرة تعني أن الكتف يساعد")
+        trunk_sig = S[f"trunk_{side}"] if side else S["trunk"]
+        tr = float(np.max(trunk_sig[pk]))
+        r3 = single_row("trunk", "Trunk lean / swing at the top of the curl", "ميلان الجذع عند قمة الثني", tr, "deg", 15, 25,
+                        "Body should stay upright", "يجب أن يبقى الجسم منتصباً")
+        chip("Compensation", "التعويض", f"{max(tr, sw / 2):.0f}°", "ok" if r3["status"] == r4["status"] == "ok" else
+             ("flag" if "flag" in (r3["status"], r4["status"]) else "watch"))
+        dn = float(np.mean([(i - a) / fps for a, i, b in wins]))
+        up = float(np.mean([(b - i) / fps for a, i, b in wins]))
+        info_row("tempo", "Bend / straighten time (average)", "زمن الثني / المد (المتوسط)", f"{dn:.1f} s / {up:.1f} s")
+        if view == "front":
+            notes.append(("Elbow flexion is measured most reliably from the side; from the front the forearm points toward "
+                          "the camera and angles can be under-estimated.",
+                          "يُقاس ثني المرفق بدقة أكبر من الجانب؛ من الأمام يتجه الساعد نحو الكاميرا وقد تقل الزوايا المقيسة."))
     else:
         sys.exit("unknown movement")
 
@@ -335,9 +416,9 @@ def compute(P, fps, movement, view, side=None):
     frames_idx = dict(start=int(a), mid=int((a + key_idx) // 2), key=int(key_idx), end=int(b))
 
     if side:
-        notes.append(("Side view: only the leg facing the camera (" + SIDE_EN[side] + ") can be tracked, so a left/right "
+        notes.append(("Side view: only the limb facing the camera (" + SIDE_EN[side] + ") can be tracked, so a left/right "
                       "comparison is not possible. Film from the front to compare both sides.",
-                      "التصوير الجانبي: يمكن تتبع الساق المواجهة للكاميرا فقط (" + SIDE_AR[side] + ")، لذلك لا تمكن المقارنة بين "
+                      "التصوير الجانبي: يمكن تتبع الطرف المواجه للكاميرا فقط (" + SIDE_AR[side] + ")، لذلك لا تمكن المقارنة بين "
                       "الجانبين. صوّر من الأمام للمقارنة."))
     R = {r["key"]: r for r in rows}
     checks = clinician_checks(movement, side, R)
@@ -379,6 +460,22 @@ def clinician_checks(movement, side, R):
         if bad("knee_flex"):
             c.append(("Reduced knee flexion: consider assessing swelling, pain, and quadriceps/hamstring tightness.",
                       "انخفاض ثني الركبة: يُنصح بتقييم التورم والألم وشدّ العضلة الرباعية والأوتار الخلفية."))
+    elif movement == "elbow_flexion":
+        if bad("elbow_flex"):
+            c.append(("Reduced elbow flexion: consider assessing pain, swelling, joint stiffness, and biceps/brachialis strength.",
+                      "انخفاض ثني المرفق: يُنصح بتقييم الألم والتورم وتيبس المفصل وقوة العضلة ذات الرأسين والعضدية."))
+        if bad("elbow_ext"):
+            c.append(("Elbow cannot fully straighten: consider assessing joint effusion, capsular tightness, pain at end range "
+                      "and triceps strength.",
+                      "المرفق لا يستقيم بالكامل: يُنصح بتقييم الانصباب المفصلي وتيبس المحفظة والألم عند نهاية المدى وقوة العضلة ثلاثية الرؤوس."))
+        if bad("trunk") or bad("arm_swing"):
+            c.append(("Compensation (trunk swing or shoulder movement) suggests momentum is helping the curl; consider lighter "
+                      "load or assessing trunk and shoulder control.",
+                      "التعويض (تأرجح الجذع أو حركة الكتف) يشير إلى أن الزخم يساعد الحركة؛ فكّر بحمل أخف أو قيّم تحكم الجذع والكتف."))
+    if movement == "knee_bend" and bad("knee_ext"):
+        c.append(("Knee does not fully straighten: consider assessing swelling/effusion, hamstring tightness, pain at end range "
+                  "and quadriceps strength (extensor lag).",
+                  "الركبة لا تستقيم بالكامل: يُنصح بتقييم التورم والانصباب وشدّ الأوتار الخلفية والألم عند نهاية المدى وقوة العضلة الرباعية."))
     if not c:
         c.append(("No notable deviations in the measured items. Re-test with the same set-up to track change over time.",
                   "لا توجد انحرافات ملحوظة في المقاييس المقيسة. أعد الاختبار بنفس الإعداد لمتابعة التغير مع الوقت."))
@@ -452,7 +549,8 @@ def annotate(video_path, P, fps, size, movement, comp, out_path, crop_paths, sid
     wr = cv2.VideoWriter(tmp, cv2.VideoWriter_fourcc(*"mp4v"), fps, (W, H))
     blue, orange, white = (255, 160, 40), (40, 140, 255), (255, 255, 255)
     want = {comp["frames_idx"][k]: k for k in ("start", "mid", "key", "end")}
-    used = [j for j in KEYS if not side or (j % 2 == 1) == (side == "L")]
+    base_keys = [L_SH, R_SH, L_EL, R_EL, L_WR, R_WR, L_HIP, R_HIP] if movement == "elbow_flexion" else KEYS
+    used = [j for j in base_keys if not side or (j % 2 == 1) == (side == "L")]
     pts = P[:, used, :]
     x0, y0 = np.nanmin(pts[:, :, 0]), np.nanmin(pts[:, :, 1])
     x1, y1 = np.nanmax(pts[:, :, 0]), np.nanmax(pts[:, :, 1])
@@ -483,6 +581,12 @@ def annotate(video_path, P, fps, size, movement, comp, out_path, crop_paths, sid
             draw_angle(fr, P[i, L_HIP], P[i, L_SH], P[i, L_EL], f"{S['sh_L'][i]:.0f}", blue)
             draw_angle(fr, P[i, R_HIP], P[i, R_SH], P[i, R_EL], f"{S['sh_R'][i]:.0f}", orange)
             hud = f"Arm  L:{S['sh_L'][i]:.0f}  R:{S['sh_R'][i]:.0f}"
+        elif movement == "elbow_flexion":
+            sides = [side] if side else ["L", "R"]
+            for sd in sides:
+                sh_, el_, wr_ = (L_SH, L_EL, L_WR) if sd == "L" else (R_SH, R_EL, R_WR)
+                draw_angle(fr, P[i, sh_], P[i, el_], P[i, wr_], f"{180 - S['elb_' + sd][i]:.0f}", blue if sd == "L" else orange)
+            hud = "Elbow flexion " + "  ".join(f"{s_}:{180 - S['elb_' + s_][i]:.0f}" for s_ in sides)
         else:
             sides = [side] if side else ["L", "R"]
             for sd in sides:
@@ -524,10 +628,18 @@ def chart(comp, fps, movement, path, side=None):
         ax.plot(t, S["sh_R"], color="#f2994a", lw=2, label="Right arm")
         ax.set_ylabel("elevation (deg)")
         ax.set_title("Arm elevation over time", fontsize=10)
+    elif movement == "elbow_flexion":
+        if side:
+            ax.plot(t, 180 - S["elb_" + side], color="#3F6200", lw=2.2, label=("Left" if side == "L" else "Right") + " elbow flexion")
+        else:
+            ax.plot(t, 180 - S["elb_L"], color="#2f80ed", lw=2, label="Left")
+            ax.plot(t, 180 - S["elb_R"], color="#f2994a", lw=2, label="Right")
+        ax.set_ylabel("flexion (deg)")
+        ax.set_title("Elbow flexion / extension over time", fontsize=10)
     elif side:
         ax.plot(t, 180 - S["knee_" + side], color="#3F6200", lw=2.2, label=("Left" if side == "L" else "Right") + " knee flexion")
         ax.set_ylabel("flexion (deg)")
-        ax.set_title("Knee flexion over time", fontsize=10)
+        ax.set_title("Knee flexion / extension over time", fontsize=10)
     else:
         ax.plot(t, 180 - S["knee_L"], color="#2f80ed", lw=2, label="Left")
         ax.plot(t, 180 - S["knee_R"], color="#f2994a", lw=2, label="Right")
@@ -920,6 +1032,8 @@ def run(video, movement, view, patient, outdir, lang="both", landmarks=None, com
     if len(lm) < 10:
         sys.exit("Video too short.")
     side = visible_side(lm) if (view == "side" and movement in ("squat", "knee_bend")) else None
+    if view == "side" and movement == "elbow_flexion":
+        side = visible_arm_side(lm)
     keys = needed(movement, side)
     P, rate = clean(lm, fps, keys)
     if rate < 0.6:

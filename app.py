@@ -11,7 +11,8 @@ import movement_lab as ml
 HERE = os.path.dirname(os.path.abspath(__file__))
 LABELS = {"squat": ("Squat", "القرفصاء"),
           "shoulder_raise": ("Shoulder raise (arm elevation)", "رفع الذراع"),
-          "knee_bend": ("Standing knee bend", "ثني الركبة وقوفاً")}
+          "knee_bend": ("Knee flexion / extension", "ثني ومد الركبة"),
+          "elbow_flexion": ("Elbow flexion / extension (arm curl)", "ثني ومد المرفق (الذراع)")}
 GREEN, OLIVE = "#70B000", "#3F6200"
 CHIP_COL = {"ok": GREEN, "watch": "#D99A1A", "flag": "#C8403A", "info": "#7A8691"}
 
@@ -125,11 +126,11 @@ if gate():
         st.markdown(
             "- Phone on a stand, whole body in frame, 2-3 m away, good light, fitted clothes  \n"
             "- 3-5 slow repetitions, 5-30 seconds. Do **not** use a mirrored selfie camera  \n"
-            "- **Side view** measures the leg facing the camera only. Use **front view** to compare left and right")
+            "- **Side view** measures the limb (arm or leg) facing the camera only. Use **front view** to compare left and right")
         st.markdown("<div dir='rtl' style='text-align:right'>"
                     "• الهاتف على حامل، الجسم كاملاً في الإطار، على بعد 2-3 أمتار، إضاءة جيدة وملابس ضيقة<br>"
                     "• من 3 إلى 5 تكرارات بطيئة، من 5 إلى 30 ثانية. لا تستخدم كاميرا السيلفي المعكوسة<br>"
-                    "• التصوير الجانبي يقيس الساق المواجهة للكاميرا فقط. استخدم التصوير الأمامي للمقارنة بين الجانبين"
+                    "• التصوير الجانبي يقيس الطرف (الذراع أو الساق) المواجه للكاميرا فقط. استخدم التصوير الأمامي للمقارنة بين الجانبين"
                     "</div>", unsafe_allow_html=True)
     up = st.file_uploader("Video", type=["mp4", "mov", "m4v", "avi"], label_visibility="collapsed")
     prev_up = st.file_uploader("Previous session results (.json) - optional, shows progress · نتائج الجلسة السابقة (اختياري)",
