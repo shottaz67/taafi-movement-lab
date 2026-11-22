@@ -270,10 +270,17 @@ def compute(P, fps, movement, view, side=None):
         rows.append(d)
         return d
 
-    def pair_row(key, en, ar, l, r, unit, ref_en, ref_ar):
+    def pair_row(key, en, ar, l, r, unit, ref_en, ref_ar, good=None, watch=None):
         a = asym(l, r)
-        return add(key, en, ar, asym_status(a), left=round(float(l), 1), right=round(float(r), 1),
-                   asym=round(a, 1), unit=unit, ref_en=ref_en, ref_ar=ref_ar)
+        st, low = asym_status(a), False
+        if good is not None:
+            lo = min(l, r)
+            st_r = "ok" if lo >= good else ("watch" if lo >= watch else "flag")
+            order = ("ok", "watch", "flag")
+            if order.index(st_r) > order.index(st):
+                st, low = st_r, True
+        return add(key, en, ar, st, left=round(float(l), 1), right=round(float(r), 1),
+                   asym=round(a, 1), unit=unit, ref_en=ref_en, ref_ar=ref_ar, low=low)
 
     def side_row(key, en, ar, v, sd, good, watch, ref_en, ref_ar):
         st = "ok" if v >= good else ("watch" if v >= watch else "flag")
@@ -318,12 +325,9 @@ def compute(P, fps, movement, view, side=None):
                      "ميلان الساق للأمام عند أدنى نقطة (مؤشر حركة الكاحل)", f"{sh:.0f} deg",
                      "Typical deep squat ~25-45 deg; low values can suggest limited ankle motion")
         else:
-            fl_L = float(np.mean((180 - S["knee_L"])[pk]))
-            fl_R = float(np.mean((180 - S["knee_R"])[pk]))
-            r1 = pair_row("squat_flex", "Knee flexion at deepest point", "ثني الركبة عند أعمق نقطة", fl_L, fl_R, "deg",
-                          f"Joint angle at bottom: ~{180 - depth:.0f} deg (flexion = 180 - joint angle). Deep squat ~110-130",
-                          "الثني = 180 - زاوية المفصل")
-            chip("Left/right depth", "تماثل العمق", f"{r1['asym']}%", r1["status"])
+            notes.append(("Front view cannot measure squat depth (the thighs point toward the camera), so only knee alignment "
+                          "and trunk lean are graded. Film from the side for depth.",
+                          "التصوير الأمامي لا يقيس عمق القرفصاء (الفخذان يتجهان نحو الكاميرا)، لذلك يُقيَّم فقط محاذاة الركبة وميلان الجذع. صوّر من الجانب لقياس العمق."))
             tr = float(np.max(trunk_sig[pk]))
             r2 = single_row("trunk", "Sideways trunk lean at the bottom", "ميلان الجذع جانبياً", tr, "deg", 6, 10,
                             "Should stay near vertical", "يجب أن يبقى قريباً من العمودي")
@@ -336,12 +340,12 @@ def compute(P, fps, movement, view, side=None):
             worst = max(rows[-2:], key=lambda r: r["value"])
             chip("Knee alignment", "محاذاة الركبة", f"{worst['value']:.0f}%", worst["status"])
             chip("Trunk lean", "ميلان الجذع", f"{tr:.0f}°", r2["status"])
-        if len(pk) >= 2:
+        if len(pk) >= 2 and side:
             rng = float(np.max(f[pk]) - np.min(f[pk]))
             r3 = single_row("rep_range", "Depth difference between repetitions", "فرق العمق بين التكرارات", rng, "deg", 5, 10,
                             "Similar depth each rep suggests steady control", "عمق متقارب يدل على ثبات التحكم")
             chip("Consistency", "الثبات", f"±{rng:.0f}°", r3["status"])
-        else:
+        elif side:
             chip("Consistency", "الثبات", "n/a", "info")
         dn = float(np.mean([(i - a) / fps for a, i, b in wins]))
         up = float(np.mean([(b - i) / fps for a, i, b in wins]))
@@ -359,7 +363,7 @@ def compute(P, fps, movement, view, side=None):
         reps = len(pk)
         key_idx = int(pk[np.argmax(f[pk])])
         r1 = pair_row("sh_elev", "Maximum arm elevation", "أقصى ارتفاع للذراع", float(np.mean(S["sh_L"][pk])),
-                      float(np.mean(S["sh_R"][pk])), "deg", "Full elevation ~150-180 deg", "الرفع الكامل ~150-180 درجة")
+                      float(np.mean(S["sh_R"][pk])), "deg", "Full elevation ~150-180 deg", "الرفع الكامل ~150-180 درجة", 140, 110)
         chip("Arm raise L/R", "رفع الذراع", f"{r1['asym']}%", r1["status"])
         tr = float(np.max(S["trunk"][pk]))
         r2 = single_row("trunk", "Sideways trunk lean at the top", "ميلان الجذع جانبياً عند القمة", tr, "deg", 6, 10,
@@ -562,11 +566,18 @@ def compute(P, fps, movement, view, side=None):
         key_idx = int(pk[np.argmax(f[pk])])
         mL, mR = float(np.mean(fl["L"][pk])), float(np.mean(fl["R"][pk]))
         fs = "L" if mL >= mR else "R"
+        if view == "front":
+            fs = "L" if float(np.mean(P[pk, L_KN, 1])) >= float(np.mean(P[pk, R_KN, 1])) else "R"
         front, back = max(mL, mR), min(mL, mR)
-        r1 = side_row("lunge_front", "Front knee flexion at the bottom", "ثني الركبة الأمامية عند أدنى نقطة", front, fs, 85, 65,
-                      "Front knee ~90-110 deg of flexion at the bottom of a lunge", "الركبة الأمامية ~90-110 درجة عند أدنى نقطة")
-        chip("Front knee", "الركبة الأمامية", f"{front:.0f}°", r1["status"])
-        info_row("lunge_back", "Back knee flexion at the bottom", "ثني الركبة الخلفية عند أدنى نقطة", f"{back:.0f} deg")
+        if view == "front":
+            notes.append(("Front view cannot measure lunge depth (the front thigh points toward the camera), so only knee "
+                          "alignment and trunk lean are graded. Film from the side for depth.",
+                          "التصوير الأمامي لا يقيس عمق الطعنة (الفخذ الأمامي يتجه نحو الكاميرا)، لذلك يُقيَّم فقط محاذاة الركبة وميلان الجذع. صوّر من الجانب لقياس العمق."))
+        else:
+            r1 = side_row("lunge_front", "Front knee flexion at the bottom", "ثني الركبة الأمامية عند أدنى نقطة", front, fs, 85, 65,
+                          "Front knee ~90-110 deg of flexion at the bottom of a lunge", "الركبة الأمامية ~90-110 درجة عند أدنى نقطة")
+            chip("Front knee", "الركبة الأمامية", f"{front:.0f}°", r1["status"])
+            info_row("lunge_back", "Back knee flexion at the bottom", "ثني الركبة الخلفية عند أدنى نقطة", f"{back:.0f} deg")
         tr = float(np.max(S["trunk"][pk]))
         if view == "front":
             r2 = single_row("trunk", "Sideways trunk lean at the bottom", "ميلان الجذع جانبياً", tr, "deg", 6, 10,
@@ -579,7 +590,7 @@ def compute(P, fps, movement, view, side=None):
             r2 = single_row("trunk", "Trunk lean at the bottom", "ميلان الجذع عند أدنى نقطة", tr, "deg", 25, 40,
                             "Trunk should stay fairly upright", "يجب أن يبقى الجذع منتصباً نسبياً")
         chip("Trunk lean", "ميلان الجذع", f"{tr:.0f}°", r2["status"])
-        if len(pk) >= 2:
+        if len(pk) >= 2 and view != "front":
             rng = float(np.max(f[pk]) - np.min(f[pk]))
             r4 = single_row("rep_range", "Depth difference between repetitions", "فرق العمق بين التكرارات", rng, "deg", 5, 10,
                             "Similar depth each rep suggests steady control", "عمق متقارب يدل على ثبات التحكم")
@@ -695,7 +706,7 @@ def compute(P, fps, movement, view, side=None):
             notes.append(("Only one leg was lifted, so no left/right comparison was made. Repeat with the other leg.",
                           "تم رفع ساق واحدة فقط، لذلك لم تُجرَ مقارنة بين الجانبين. كرر الاختبار بالساق الأخرى."))
         else:
-            r1 = pair_row("hip_abd", "Maximum hip abduction", "أقصى تبعيد للورك", mL, mR, "deg", ref_en, ref_ar)
+            r1 = pair_row("hip_abd", "Maximum hip abduction", "أقصى تبعيد للورك", mL, mR, "deg", ref_en, ref_ar, 30, 20)
             chip("Left/right abduction", "تماثل التبعيد", f"{r1['asym']}%", r1["status"])
         tr = float(np.max(S["trunk"][pk]))
         r2 = single_row("trunk", "Sideways trunk lean while lifting the leg", "ميلان الجذع جانبياً أثناء رفع الساق", tr, "deg", 8, 12,
@@ -722,8 +733,16 @@ def compute(P, fps, movement, view, side=None):
         reps = len(pk)
         key_idx = int(pk[np.argmax(f[pk])])
         m = float(np.mean(f[pk]))
-        r1 = side_row("slr", "Maximum leg raise (hip flexion)", "أقصى رفع للساق (ثني الورك)", m, sd, 70, 50,
-                      "Typical straight-leg-raise range ~70-90 deg", "المدى الطبيعي لرفع الساق المستقيمة ~70-90 درجة")
+        lying = float(np.nanmedian(S["trunk_" + sd])) > 45
+        if lying:
+            r1 = side_row("slr", "Maximum leg raise (hip flexion)", "أقصى رفع للساق (ثني الورك)", m, sd, 70, 50,
+                          "Lying straight-leg-raise range ~70-90 deg", "المدى الطبيعي لرفع الساق المستقيمة استلقاءً ~70-90 درجة")
+        else:
+            r1 = info_row("slr", "Maximum leg raise (hip flexion), standing", "أقصى رفع للساق (ثني الورك) وقوفاً", f"{m:.0f} deg",
+                          "Not graded: the ~70-90 deg reference applies to the lying test; a standing active raise is normally lower",
+                          "غير مُقيَّم: المرجع ~70-90 درجة خاص بالاختبار استلقاءً؛ الرفع الفعّال وقوفاً أقل عادةً")
+            notes.append(("The leg raise was done standing, so it is reported but not graded. For the standard test, film lying on the back from the side.",
+                          "تم رفع الساق وقوفاً، لذلك تُعرض القيمة دون تقييم. للاختبار القياسي صوّر الشخص مستلقياً على ظهره من الجانب."))
         chip("Leg raise", "رفع الساق", f"{m:.0f}°", r1["status"])
         kl = float(np.mean((180 - S["knee_" + sd])[pk]))
         r2 = single_row("knee_lag", "Knee bend while the leg is raised (should stay straight)", "ثني الركبة أثناء رفع الساق (يجب أن تبقى مستقيمة)",
@@ -793,17 +812,17 @@ def compute(P, fps, movement, view, side=None):
         y0 = float(np.nanmedian(hy[:max(5, int(fps))]))
         gain = y0 - hy
         f = gain
-        up_idx = np.where(gain > 0.08 * torso)[0]
+        up_idx = np.where(gain > 0.15 * torso)[0]
         if len(up_idx) < int(fps):
             notes.append(("No stand-up was detected. Start seated, stand, walk about 3 m, turn, return and sit down.",
                           "لم يتم رصد وقوف. ابدأ جالساً ثم قف وامشِ نحو ٣ أمتار ثم استدر وعد واجلس."))
             up_idx = np.array([0, len(hy) - 1])
         a, b = int(up_idx[0]), int(up_idx[-1])
         total = (b - a) / fps
-        st_t = "ok" if total < 10 else ("watch" if total < 14 else "flag")
+        st_t = "ok" if total < 10 else ("watch" if total < 13.5 else "flag")
         add("tug_time", "Total test time (rise to sit)", "زمن الاختبار الكلي (من الوقوف حتى الجلوس)", st_t, value=round(total, 1), unit="s",
-            ref_en="Under ~10 s: normal mobility; 14 s or more is linked to higher fall risk in older adults",
-            ref_ar="أقل من ~10 ثوانٍ: حركة طبيعية؛ ١٤ ثانية فأكثر ترتبط بخطر سقوط أعلى لدى كبار السن")
+            ref_en="Under ~10 s: normal mobility; 13.5 s or more is the usual fall-risk cut-point in older adults. Timed from leaving the seat, so a stopwatch started at 'go' reads slightly longer",
+            ref_ar="أقل من ~10 ثوانٍ: حركة طبيعية؛ 13.5 ثانية فأكثر هي الحد المعتمد لخطر السقوط لدى كبار السن. يبدأ التوقيت من مغادرة المقعد، لذا قراءة ساعة الإيقاف من كلمة «ابدأ» أطول قليلاً")
         chip("Test time", "زمن الاختبار", f"{total:.1f} s", st_t)
         top = float(np.nanpercentile(gain[a:b + 1], 90))
         rs = np.where(gain[a:b + 1] >= 0.9 * top)[0]
@@ -901,18 +920,25 @@ def compute(P, fps, movement, view, side=None):
             rot = np.degrees(np.arcsin(np.clip((P[:, 0, 0] - (P[:, 7, 0] + P[:, 8, 0]) / 2) / (ew / 2 + 1e-9), -1, 1)))
             rot = rot - np.median(rot[:max(5, int(fps))])
             tl, tr_ = float(-np.percentile(tilt, 2)), float(np.percentile(tilt, 98))
-            rl, rr = float(-np.percentile(rot, 2)), float(np.percentile(rot, 98))
-            r1 = pair_row("neck_tilt", "Sideways neck tilt", "ميلان الرقبة جانبياً", tl, tr_, "deg",
-                          "Approximate normal ~40-45 deg each side", "الطبيعي التقريبي ~40-45 درجة لكل جانب")
+            rl, rr = float(np.percentile(rot, 98)), float(-np.percentile(rot, 2))   # image right = the person's left
+            if max(tl, tr_) < 10:      # tilt was not performed in this clip: report, do not grade
+                r1 = info_row("neck_tilt", "Sideways neck tilt", "ميلان الرقبة جانبياً", "not performed in this video")
+                r1["asym"] = "-"
+            else:
+                r1 = pair_row("neck_tilt", "Sideways neck tilt", "ميلان الرقبة جانبياً", tl, tr_, "deg",
+                              "Approximate normal ~40-45 deg each side", "الطبيعي التقريبي ~40-45 درجة لكل جانب", 30, 20)
             r2 = pair_row("neck_rot", "Neck rotation", "دوران الرقبة", rl, rr, "deg",
                           "Approximate normal ~70-80 deg each side (underestimated from a single camera)",
                           "الطبيعي التقريبي ~70-80 درجة لكل جانب (مقدّر بأقل من الحقيقة بكاميرا واحدة)")
-            chip("Tilt L/R", "الميلان", f"{r1['asym']}%", r1["status"])
+            chip("Tilt L/R", "الميلان", f"{r1['asym']}%" if r1["status"] != "info" else "n/a", r1["status"])
+            if r1["status"] == "info":
+                r1["asym"] = None
             chip("Rotation L/R", "الدوران", f"{r2['asym']}%", r2["status"])
             f = tilt
             plot = dict(title="Sideways head tilt over time", ylabel="tilt (deg)", hud="Head tilt", lines=[("Tilt", tilt, "#3F6200"), ("Rotation", rot, "#f2994a")])
-            notes.append(("Left/right are as seen by the camera. Neck angles are rough estimates from face points.",
-                          "اليمين/اليسار كما تراه الكاميرا. زوايا الرقبة تقديرات تقريبية من نقاط الوجه."))
+            notes.append(("Left/right are the person's own sides (do not use a mirrored selfie camera). Neck angles are rough "
+                          "estimates from face points; rotation is the least reliable.",
+                          "اليمين/اليسار هما جانبا الشخص نفسه (لا تستخدم كاميرا السيلفي المعكوسة). زوايا الرقبة تقديرات تقريبية من نقاط الوجه، والدوران هو الأقل موثوقية."))
         key_idx = int(np.argmax(np.abs(f)))
         wins = [(0, key_idx, n_ - 1)]
         reps = 1
@@ -964,9 +990,9 @@ def compute(P, fps, movement, view, side=None):
 
     if side:
         notes.append(("Side view: only the limb facing the camera (" + SIDE_EN[side] + ") can be tracked, so a left/right "
-                      "comparison is not possible. Film from the front to compare both sides.",
+                      "comparison is not possible. Film the other side separately to compare.",
                       "التصوير الجانبي: يمكن تتبع الطرف المواجه للكاميرا فقط (" + SIDE_AR[side] + ")، لذلك لا تمكن المقارنة بين "
-                      "الجانبين. صوّر من الأمام للمقارنة."))
+                      "الجانبين. صوّر الجانب الآخر على حدة للمقارنة."))
     R = {r["key"]: r for r in rows}
     checks = clinician_checks(movement, side, R)
     return dict(rows=rows, notes=notes, key_idx=key_idx, reps=reps, series=S, side=side, rep_table=rep_table,
@@ -1126,7 +1152,11 @@ def findings(movement, view, rows):
                             f"{r['ar']} (الجانب {SIDE_AR[r['side']]}): {r['value']}° - {STATUS_AR[r['status']]}."))
         elif r["asym"] is not None:
             weaker = "L" if r["left"] < r["right"] else "R"
-            if r["status"] == "ok":
+            if r.get("low"):
+                out.append((r["status"],
+                            f"{r['en']}: both sides are below the expected range (left {r['left']} deg, right {r['right']} deg).",
+                            f"{r['ar']}: الجانبان أقل من المدى المتوقع (الأيسر {r['left']}° والأيمن {r['right']}°)."))
+            elif r["status"] == "ok":
                 out.append(("ok", f"{r['en']}: left {r['left']} deg vs right {r['right']} deg - balanced ({r['asym']}% difference).",
                             f"{r['ar']}: الأيسر {r['left']}° مقابل الأيمن {r['right']}° - متوازن (فرق {r['asym']}%)."))
             else:
@@ -1136,7 +1166,7 @@ def findings(movement, view, rows):
         elif r["status"] != "ok":
             out.append((r["status"], f"{r['en']}: {r['value']} {r['unit']} - {STATUS_EN[r['status']].lower()}.",
                         f"{r['ar']}: {r['value']} - {STATUS_AR[r['status']]}."))
-    if movement == "squat":
+    if movement == "squat" and rows and rows[0]["key"] == "squat_flex":
         r0 = rows[0]
         d = float(np.mean([r0[k] for k in ("left", "right") if r0.get(k) is not None]))
         sd = r0.get("side")
@@ -1180,7 +1210,9 @@ def annotate(video_path, P, fps, size, movement, comp, out_path, crop_paths, sid
     tmp = out_path + ".tmp.mp4"
     wr = cv2.VideoWriter(tmp, cv2.VideoWriter_fourcc(*"mp4v"), fps, (W, H))
     blue, orange, white = (255, 160, 40), (40, 140, 255), (255, 255, 255)
-    want = {comp["frames_idx"][k]: k for k in ("start", "mid", "key", "end")}
+    want = {}
+    for k in ("start", "mid", "key", "end"):
+        want.setdefault(comp["frames_idx"][k], []).append(k)
     base_keys = [L_SH, R_SH, L_EL, R_EL, L_WR, R_WR, L_HIP, R_HIP] if movement == "elbow_flexion" else KEYS
     used = [j for j in base_keys if not side or (j % 2 == 1) == (side == "L")]
     pts = P[:, used, :]
@@ -1195,6 +1227,7 @@ def annotate(video_path, P, fps, size, movement, comp, out_path, crop_paths, sid
         cv2.putText(img, s, (x, y), FONT, scale, white, 1, cv2.LINE_AA)
 
     i = 0
+    last_crop = None
     while True:
         ok, fr = cap.read()
         if not ok or i >= len(P):
@@ -1245,13 +1278,19 @@ def annotate(video_path, P, fps, size, movement, comp, out_path, crop_paths, sid
             crop = fr[cy0:cy1, cx0:cx1]
             sc = 360 / max(1, crop.shape[0])
             crop = cv2.resize(crop, None, fx=sc, fy=sc, interpolation=cv2.INTER_CUBIC)
-            cv2.imwrite(crop_paths[want[i]], crop, [cv2.IMWRITE_JPEG_QUALITY, 92])
+            for k_ in want[i]:
+                cv2.imwrite(crop_paths[k_], crop, [cv2.IMWRITE_JPEG_QUALITY, 92])
+            last_crop = crop
         text(fr, hud, 8, 22, 0.5)
         text(fr, "Taafi Movement Lab", 8, H - 10, 0.4)
         wr.write(fr)
         i += 1
     cap.release()
     wr.release()
+    # safety net: a requested frame that was never reached (shorter video than tracked) reuses the last crop
+    for k_, p_ in crop_paths.items():
+        if not os.path.exists(p_) and last_crop is not None:
+            cv2.imwrite(p_, last_crop, [cv2.IMWRITE_JPEG_QUALITY, 92])
     if shutil.which("ffmpeg"):
         subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", tmp, "-c:v", "libx264", "-pix_fmt", "yuv420p",
                         "-preset", "veryfast", "-crf", "23", out_path], check=False)
@@ -1689,12 +1728,18 @@ def run(video, movement, view, patient, outdir, lang="both", landmarks=None, com
                                                      "straight_leg_raise", "posture", "neck")) else None
     if view == "side" and movement in ("elbow_flexion", "shoulder_flexion", "wrist"):
         side = visible_arm_side(lm)
+    if view == "side" and movement == "neck":
+        vL, vR = np.nanmean(lm[:, 7, 2]), np.nanmean(lm[:, 8, 2])
+        side = "L" if (np.isnan(vR) or vL >= vR) else "R"
     keys = needed(movement, side)
     P, rate = clean(lm, fps, keys)
     if rate < 0.6:
         sys.exit(f"Person clearly detected in only {rate:.0%} of frames. Re-film: full body in frame, "
                  "steady camera, good light, fitted clothing.")
     quality = float(np.nanmean(lm[:, keys, 2])) * 100
+    bad_ = ~(np.nan_to_num(lm[:, keys, 2], nan=0.0) >= 0.5).all(axis=1)
+    g0, g1 = longest_run(bad_)
+    gap_s = (g1 - g0) / fps
     comp = compute(P, fps, movement, view, side)
     comp["chips"].append(dict(en="Tracking quality", ar="جودة التتبع", value=f"{quality:.0f}%",
                               status="ok" if quality >= 85 else "watch"))
@@ -1706,6 +1751,9 @@ def run(video, movement, view, patient, outdir, lang="both", landmarks=None, com
         annotate(video, P, fps, size, movement, comp, base + "_annotated.mp4", crops, side)
     chart(comp, fps, movement, chart_img, side)
     extra = []
+    if gap_s > 0.5:
+        extra.append((f"Tracking was lost for up to {gap_s:.1f} s in one stretch; values there are filled in by estimation and are less reliable.",
+                      f"فُقد التتبع لمدة تصل إلى {gap_s:.1f} ثانية متواصلة؛ القيم في تلك الفترة تقديرية وأقل موثوقية."))
     if min(size) < 400:
         extra.append((f"Low video resolution ({size[0]}x{size[1]}): angles are less precise. Film at 720p or higher.",
                       f"دقة الفيديو منخفضة ({size[0]}x{size[1]}): الزوايا أقل دقة. يُفضّل التصوير بدقة 720p أو أعلى."))

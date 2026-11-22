@@ -25,7 +25,7 @@ LABELS = {"squat": ("Squat", "القرفصاء"),
           "single_leg_balance": ("Single-leg balance", "التوازن على ساق واحدة"),
           "gait": ("Gait (walking)", "المشي"),
           "tug": ("Timed Up and Go", "اختبار الوقوف والمشي الموقّت")}
-TIPS = {"squat": ("Side view for depth; front view to compare left and right.", "من الجانب للعمق، ومن الأمام للمقارنة بين الجانبين."),
+TIPS = {"squat": ("Side view for depth; front view for knee alignment only.", "من الجانب للعمق، ومن الأمام لمحاذاة الركبة فقط."),
         "shoulder_raise": ("Front view, arms start by the sides, raise both arms out to the sides slowly.", "من الأمام، الذراعان بجانب الجسم ثم ارفعهما جانباً ببطء."),
         "shoulder_flexion": ("Side view, arm by the side, raise it straight forward and up, then lower slowly.", "من الجانب، الذراع بجانب الجسم، ارفعها للأمام وللأعلى ثم أنزلها ببطء."),
         "knee_bend": ("Side view. Bend the knee fully, then straighten fully (standing or seated).", "من الجانب. اثنِ الركبة بالكامل ثم مدّها بالكامل (وقوفاً أو جلوساً)."),
@@ -35,13 +35,17 @@ TIPS = {"squat": ("Side view for depth; front view to compare left and right.", 
         "posture": ("Stand relaxed and still 3-5 s, whole body in view (front or side). A photo also works.", "قف مسترخياً وثابتاً ٣-٥ ثوانٍ والجسم كاملاً في الإطار (أمامي أو جانبي). تصلح الصورة أيضاً."),
         "hip_flexion": ("Side view, raise the knee toward the chest, 3-5 times each leg.", "من الجانب، ارفع الركبة نحو الصدر من ٣ إلى ٥ مرات لكل ساق."),
         "hip_abduction": ("Front view, standing, lift one leg out to the side keeping the body upright, 3-5 times.", "من الأمام، وقوفاً، ارفع ساقاً جانباً مع إبقاء الجسم منتصباً، من ٣ إلى ٥ مرات."),
-        "straight_leg_raise": ("Side view, standing or lying, raise the straight leg forward, 3-5 times.", "من الجانب، وقوفاً أو استلقاءً، ارفع الساق المستقيمة للأمام من ٣ إلى ٥ مرات."),
+        "straight_leg_raise": ("Side view, lying on the back (standard test), raise the straight leg, 3-5 times. Standing is reported but not graded.", "من الجانب، استلقاءً على الظهر (الاختبار القياسي)، ارفع الساق المستقيمة من ٣ إلى ٥ مرات. وقوفاً تُعرض القيمة دون تقييم."),
         "sit_to_stand": ("Side view, arms crossed, stand fully then sit, 5 times. Whole body and chair in frame.", "من الجانب، الذراعان متقاطعتان، وقوف كامل ثم جلوس ٥ مرات، الجسم والكرسي في الإطار."),
         "lunge": ("Side view (depth) or front view (knee alignment), 3-5 slow lunges.", "من الجانب (العمق) أو من الأمام (محاذاة الركبة)، من ٣ إلى ٥ طعنات بطيئة."),
         "single_leg_balance": ("Front view, lift one foot and hold as long as possible (up to 30 s).", "من الأمام، ارفع قدماً واحدة وثبّت أطول وقت ممكن (حتى ٣٠ ثانية)."),
         "gait": ("Side view, walk across the frame at a normal pace, at least 5 steps, whole body in view.", "من الجانب، امشِ عبر الإطار بسرعة عادية، ٥ خطوات على الأقل والجسم كاملاً في الإطار."),
         "tug": ("Side view, 3 m path: start seated, stand, walk, turn, return, sit. Camera sees the whole path.", "من الجانب، مسار ٣ أمتار: ابدأ جالساً ثم قف وامشِ واستدر وعد واجلس. الكاميرا ترى المسار كاملاً.")}
-FRONT_DEFAULT = ("shoulder_raise", "single_leg_balance", "hip_abduction", "neck")
+# Only the camera views in which the movement's plane faces the camera. First entry is the default.
+VIEWS = {"squat": ["side", "front"], "lunge": ["side", "front"], "neck": ["front", "side"], "posture": ["front", "side"],
+         "shoulder_raise": ["front"], "hip_abduction": ["front"], "single_leg_balance": ["front"],
+         "shoulder_flexion": ["side"], "elbow_flexion": ["side"], "wrist": ["side"], "hip_flexion": ["side"],
+         "straight_leg_raise": ["side"], "knee_bend": ["side"], "sit_to_stand": ["side"], "gait": ["side"], "tug": ["side"]}
 GREEN, OLIVE = "#70B000", "#3F6200"
 CHIP_COL = {"ok": GREEN, "watch": "#D99A1A", "flag": "#C8403A", "info": "#7A8691"}
 
@@ -160,7 +164,7 @@ if gate():
     bar("1 · Movement", "١ · الحركة")
     movement = st.selectbox("Movement", list(LABELS), format_func=lambda m: f"{LABELS[m][0]}   ·   {LABELS[m][1]}",
                             label_visibility="collapsed")
-    view = st.radio("Camera view", ["side", "front"], horizontal=True, index=1 if movement in FRONT_DEFAULT else 0,
+    view = st.radio("Camera view", VIEWS[movement], horizontal=True, key=f"view_{movement}",
                     format_func=lambda v: {"side": "Side view · جانبي", "front": "Front view · أمامي"}[v])
     st.caption(f"{TIPS[movement][0]}  ·  {TIPS[movement][1]}")
     patient = st.text_input("Name or label (optional) · الاسم أو الرمز (اختياري)")
@@ -170,11 +174,11 @@ if gate():
         st.markdown(
             "- Phone on a stand, whole body in frame, 2-3 m away, good light, fitted clothes  \n"
             "- 3-5 slow repetitions, 5-30 seconds. Do **not** use a mirrored selfie camera  \n"
-            "- **Side view** measures the limb (arm or leg) facing the camera only. Use **front view** to compare left and right")
+            "- **Side view** measures the limb (arm or leg) facing the camera only. To compare left and right, film each side separately and compare the two reports")
         st.markdown("<div dir='rtl' style='text-align:right'>"
                     "• الهاتف على حامل، الجسم كاملاً في الإطار، على بعد 2-3 أمتار، إضاءة جيدة وملابس ضيقة<br>"
                     "• من 3 إلى 5 تكرارات بطيئة، من 5 إلى 30 ثانية. لا تستخدم كاميرا السيلفي المعكوسة<br>"
-                    "• التصوير الجانبي يقيس الطرف (الذراع أو الساق) المواجه للكاميرا فقط. استخدم التصوير الأمامي للمقارنة بين الجانبين"
+                    "• التصوير الجانبي يقيس الطرف (الذراع أو الساق) المواجه للكاميرا فقط. للمقارنة بين الجانبين صوّر كل جانب على حدة وقارن التقريرين"
                     "</div>", unsafe_allow_html=True)
     up = st.file_uploader("Video", type=["mp4", "mov", "m4v", "avi"] + (["jpg", "jpeg", "png"] if movement == "posture" else []),
                            label_visibility="collapsed")
@@ -226,7 +230,7 @@ if gate():
                            use_container_width=True, help="Keep this file and upload it next session to see progress")
 
     st.markdown('<div class="foot">Taafi - Rehabilitation and Healing Center &nbsp;|&nbsp; Screening aid with approximate 2D angles '
-                'from one camera. Not a diagnosis; a clinician must review. Videos are processed in memory and not stored.'
+                'from one camera. Not a diagnosis; a clinician must review. Videos are uploaded to the hosting server for analysis and deleted afterwards.'
                 '<div class="ar">تعافي - مركز الشفاء والعلاج الطبيعي &nbsp;|&nbsp; أداة فحص مساعدة بزوايا تقريبية من كاميرا واحدة. '
-                'ليست تشخيصاً ويلزم مراجعة الطبيب. تتم معالجة الفيديو في الذاكرة ولا يتم حفظه.</div></div>',
+                'ليست تشخيصاً ويلزم مراجعة الطبيب. يُرفع الفيديو إلى خادم الاستضافة للتحليل ثم يُحذف بعد ذلك.</div></div>',
                 unsafe_allow_html=True)
